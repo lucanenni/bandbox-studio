@@ -1,0 +1,35 @@
+# Local builds, environments and generated launch/config files
+.venv/
+venv/
+bin/
+.build/
+.local/
+*.app/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Device state, captures, logs, and local secrets must not be published
+state/
+work/
+evidence/
+backups/
+device.json
+device-id.txt
+control-revision.txt
+*.plan.json
+*.result.json
+*.interrupted.json
+*.jsonl
+*.stderr
+*.log
+*.pid
+.env
+.env.*
+.DS_Store
+*.pcap
+*.pcapng
+*.apk
+*.ipa

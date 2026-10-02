@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#171918">
+  <title>BandBox Studio</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="app-header">
+      <a class="brand" href="/" aria-label="BandBox Studio home"><span class="brand-symbol" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span>BandBox <strong>Studio</strong></span></a>
+      <span class="local-label">YOUR AMP. YOUR SOUND.</span>
+      <div class="connection"><span id="connection-dot" class="status-dot"></span><span id="connection-label">Starting up</span><button id="refresh" class="icon-button" data-request title="Read the amp" aria-label="Read the amp"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 7a7 7 0 0 1 11.5-1L20 9M4 15l2.4 3A7 7 0 0 0 18 17"/></svg></button></div>
+    </header>
+    <aside class="preset-sidebar" aria-label="Preset library">
+      <div class="sidebar-heading"><div><p class="eyebrow">SOUND LIBRARY</p><h2>Presets <span id="preset-count">—</span></h2></div><button id="new-preset" class="icon-button add-button" data-request aria-label="Create a preset" title="Create a copy of the selected sound">+</button></div>
+      <label class="search-field"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 4.5 4.5"/></svg><input id="preset-search" type="search" placeholder="Find a sound…" aria-label="Search presets"></label>
+      <div class="library-filter" role="group" aria-label="Filter presets"><button class="selected" data-filter="all" aria-pressed="true">All sounds</button><button data-filter="user" aria-pressed="false">My presets</button></div>
+      <div id="preset-list" class="preset-list"><div class="empty-library">Your sounds will appear here.</div></div>
+      <div class="sidebar-bottom"><span class="small-indicator"></span><div><strong>JBL BandBox Trio</strong><span>Guitar · Channel 3</span></div><span class="outline-badge">LOCAL</span></div>
+    </aside>
+    <main>
+      <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+      <section class="sound-header">
+        <div class="sound-heading"><div class="sound-kicker"><span id="preset-number">—</span><span>CHANNEL 3</span><span id="sound-kind" class="outline-badge">SAVED SOUND</span></div><h1 id="sound-name">Your next great sound.</h1><p id="sound-subtitle">Connect to your BandBox to find your tone.</p></div>
+        <div class="sound-actions"><button id="load-preset" class="button primary" data-request disabled>Load saved sound</button><button id="save-preset" class="button" data-request disabled>Save changes</button><button id="preset-menu" class="icon-button menu-trigger" aria-label="More preset actions" aria-expanded="false">•••</button><div id="preset-menu-items" class="popover" hidden><button id="save-as" data-request>Save as a new preset</button><button id="rename-preset" data-request>Rename preset</button><button id="copy-preset" data-request>Create a copy</button></div></div>
+      </section>
+      <nav class="workspace-tabs" aria-label="Amp controls"><button class="active" data-tab="tone" aria-current="page">Tone studio</button><button data-tab="mixer">Mixer</button><button data-tab="tools">Practice tools</button><span id="edit-status" class="edit-status">Saved settings</span></nav>
+      <section id="tab-tone" class="workspace-panel">
+        <div class="section-heading"><div><p class="eyebrow">SIGNAL CHAIN</p><h2>Shape your sound</h2></div><span class="section-note">Choose a block to edit</span></div>
+        <div id="signal-chain" class="signal-chain" role="group" aria-label="Effect blocks"></div>
+        <div id="editor" class="editor-panel"><div class="empty-state"><span class="empty-guitar" aria-hidden="true">♫</span><h3>A little inspiration. A lot of possibility.</h3><p>Read your amp, choose a preset, and make it yours.</p></div></div>
+        <div class="studio-footer"><span><span class="tiny-dot"></span> Slider changes are sent when you press Apply.</span><span>Save your sound to keep it on the amp.</span></div>
+      </section>
+      <section id="tab-mixer" class="workspace-panel" hidden>
+        <div class="section-heading"><div><p class="eyebrow">FIND THE BALANCE</p><h2>Mixer</h2></div><span class="section-note">Amp levels · 0–32</span></div>
+        <p class="panel-intro">Set the master level and balance each connected channel. Read a level to see where it is now.</p>
+        <div id="mixer" class="mixer-grid"></div>
+      </section>
+      <section id="tab-tools" class="workspace-panel" hidden>
+        <div class="section-heading"><div><p class="eyebrow">STAY IN THE GROOVE</p><h2>Practice tools</h2></div><span class="section-note">Built into your BandBox</span></div>
+        <div class="tools-navigation" role="group" aria-label="Practice tools"><button class="selected" data-tool-group="drum">Drums</button><button data-tool-group="metronome">Metronome</button><button data-tool-group="tuner">Tuner</button><button data-tool-group="looper">Looper</button></div>
+        <div id="tool-panel" class="tool-panel"></div>
+      </section>
+      <footer class="main-footer"><span>BANDBOX STUDIO</span><span>While editing here, leave JBL One and the amp’s tone controls unchanged.</span></footer>
+    </main>
+  </div>
+  <div id="busy-strip" class="busy-strip" role="status" aria-live="polite" hidden><span class="spinner"></span><span id="busy-label">Talking to your amp…</span></div>
+  <dialog id="preset-dialog"><form id="preset-form"><div class="dialog-heading"><span class="eyebrow" id="dialog-kicker">MAKE IT YOURS</span><button type="button" id="close-dialog" class="icon-button" aria-label="Close">×</button></div><h2 id="dialog-title">Create a new preset</h2><p id="dialog-description">A new copy keeps the original sound unchanged.</p><label class="form-label" for="preset-name">Preset name</label><input id="preset-name" class="text-input" maxlength="48" required autocomplete="off" placeholder="Give your sound a name"><p class="form-hint" id="dialog-hint">The amp gives your new preset the next available number.</p><div id="dialog-error" class="dialog-error" role="alert" hidden></div><div class="dialog-actions"><button id="cancel-dialog" type="button" class="button">Cancel</button><button id="submit-dialog" class="button primary" type="submit" data-request>Create & load</button></div></form></dialog>
+  <script src="/app.js" defer></script>
+</body>
+</html>

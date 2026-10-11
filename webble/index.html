@@ -4,15 +4,22 @@
 <meta charset="utf-8">
 <title>BandBox — Web Bluetooth proof of concept</title>
 <style>
-  body { font: 14px/1.4 -apple-system, system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; }
+  body { font: 14px/1.4 -apple-system, system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
   button { font-size: 14px; padding: 0.4rem 0.8rem; margin: 0.15rem; cursor: pointer; }
-  button:disabled { opacity: 0.4; cursor: default; }
+  button:disabled, select:disabled, input:disabled { opacity: 0.4; cursor: default; }
   h2 { margin-top: 2rem; font-size: 1rem; border-bottom: 1px solid #ccc; padding-bottom: 0.3rem; }
   #status { font-weight: 600; }
   #log { background: #111; color: #0f0; font-family: ui-monospace, monospace; font-size: 12px;
          padding: 0.6rem; height: 220px; overflow-y: auto; white-space: pre-wrap; border-radius: 6px; }
   .row { display: flex; gap: 0.3rem; flex-wrap: wrap; align-items: center; }
   .warn { color: #a00; font-size: 13px; }
+  .unverified { color: #a60; font-size: 13px; }
+  .slot { border: 1px solid #ddd; border-radius: 6px; padding: 0.5rem; margin: 0.4rem 0; }
+  .slot h3 { margin: 0 0 0.3rem; font-size: 0.9rem; }
+  .param-row { display: flex; align-items: center; gap: 0.4rem; margin: 0.15rem 0; }
+  .param-row label { width: 140px; font-size: 12px; }
+  .param-row input[type=range] { flex: 1; }
+  .param-row output { width: 42px; text-align: right; font-size: 12px; }
 </style>
 </head>
 <body>
@@ -40,6 +47,34 @@ https (not opened as a local file://).</p>
   <button data-looper="pause">Pause</button>
 </div>
 
+<h2>Effects <span class="unverified">(not yet verified on hardware)</span></h2>
+<div class="row">
+  <button id="readPresetBtn" disabled>Read current preset's effects</button>
+  <span id="presetReadStatus"></span>
+</div>
+<div id="slots"></div>
+
+<h2>Mixer <span class="unverified">(not yet verified on hardware)</span></h2>
+<div class="row">
+  <button id="readMasterBtn" disabled>Read master volume</button>
+  <input id="masterSlider" type="range" min="0" max="32" value="16" disabled style="width:160px">
+  <output id="masterOut">16</output>
+  <button id="setMasterBtn" disabled>Set</button>
+</div>
+<div class="row">
+  <label>Channel: <select id="channelPicker" disabled>
+    <option value="1">1</option><option value="2">2</option>
+    <option value="3">3</option><option value="4">4</option>
+  </select></label>
+  <button id="readChannelBtn" disabled>Read channel</button>
+  <span id="channelStatus"></span>
+</div>
+<div class="row">
+  <input id="channelSlider" type="range" min="0" max="32" value="16" disabled style="width:160px">
+  <output id="channelOut">16</output>
+  <button id="setChannelBtn" disabled>Set</button>
+</div>
+
 <h2>Log</h2>
 <div id="log"></div>
 
@@ -48,6 +83,10 @@ https (not opened as a local file://).</p>
 const amp = new BandBoxBLE(line => log(line));
 const statusEl = document.getElementById("status");
 const logEl = document.getElementById("log");
+let catalog = null;
+let currentPresetId = null;
+let currentDetail = null; // last getPresetDetail() result
+let channelInput = null;  // last getChannelInput() result
 
 function log(line) {
   const ts = new Date().toLocaleTimeString();
@@ -57,7 +96,10 @@ function log(line) {
 
 function setConnected(connected) {
   statusEl.textContent = connected ? `connected: ${amp.deviceName}` : "disconnected";
-  document.querySelectorAll("#presetButtons button, [data-looper]").forEach(b => b.disabled = !connected);
+  document.querySelectorAll(
+    "#presetButtons button, [data-looper], #readPresetBtn, #readMasterBtn, #setMasterBtn, " +
+    "#masterSlider, #channelPicker, #readChannelBtn, #setChannelBtn, #channelSlider"
+  ).forEach(b => b.disabled = !connected);
 }
 
 document.getElementById("connectBtn").addEventListener("click", async () => {
@@ -69,18 +111,166 @@ document.getElementById("connectBtn").addEventListener("click", async () => {
   }
 });
 
+EffectCatalog.load().then(c => { catalog = c; log("effect catalog loaded"); })
+  .catch(e => log(`failed to load effect catalog: ${e.message || e}`));
+
 // 27 factory presets, flat 1-based index (see ../re/PROTOCOL.md)
 const presetButtons = document.getElementById("presetButtons");
 for (let i = 1; i <= 27; i++) {
   const b = document.createElement("button");
   b.textContent = i;
   b.disabled = true;
-  b.addEventListener("click", () => amp.selectPreset(3, i).catch(e => log(`select failed: ${e.message || e}`)));
+  b.addEventListener("click", () => {
+    currentPresetId = i;
+    amp.selectPreset(3, i).catch(e => log(`select failed: ${e.message || e}`));
+  });
   presetButtons.appendChild(b);
 }
 
 document.querySelectorAll("[data-looper]").forEach(b => {
   b.addEventListener("click", () => amp.looper(b.dataset.looper).catch(e => log(`looper failed: ${e.message || e}`)));
+});
+
+// ---- effects ----
+
+document.getElementById("readPresetBtn").addEventListener("click", async () => {
+  const statusEl2 = document.getElementById("presetReadStatus");
+  try {
+    const selection = await amp.getSelection(3);
+    currentPresetId = selection.presetId;
+    currentDetail = await amp.getPresetDetail(selection.presetId);
+    statusEl2.textContent = `preset ${selection.presetId}: ${currentDetail.name}`;
+    renderSlots(currentDetail);
+  } catch (e) {
+    statusEl2.textContent = `read failed: ${e.message || e}`;
+  }
+});
+
+function renderSlots(detail) {
+  const container = document.getElementById("slots");
+  container.innerHTML = "";
+  for (const slot of detail.slots) {
+    const model = catalog ? catalog.findModel(slot.algorithmId, slot.configId) : null;
+    const div = document.createElement("div");
+    div.className = "slot";
+    const title = document.createElement("h3");
+    title.textContent = `Slot ${slot.slotId}${model ? " — " + model.name : ""} ` +
+      (slot.bypassRaw === 1 ? "(bypassed)" : "(active)");
+    div.appendChild(title);
+
+    const row = document.createElement("div");
+    row.className = "row";
+    const bypassBtn = document.createElement("button");
+    bypassBtn.textContent = slot.bypassRaw === 1 ? "Enable" : "Bypass";
+    bypassBtn.addEventListener("click", async () => {
+      try {
+        await amp.setEffectBypass(3, currentPresetId, slot, slot.bypassRaw === 1);
+        log(`bypass toggled for slot ${slot.slotId}; press "Read current preset's effects" to refresh`);
+      } catch (e) { log(`bypass failed: ${e.message || e}`); }
+    });
+    row.appendChild(bypassBtn);
+
+    if (model && catalog) {
+      const select = document.createElement("select");
+      for (const alt of catalog.modelsForSlot(slot.slotId)) {
+        const opt = document.createElement("option");
+        opt.value = alt.model_id;
+        opt.textContent = alt.name;
+        if (alt.model_id === model.model_id) opt.selected = true;
+        select.appendChild(opt);
+      }
+      const applyBtn = document.createElement("button");
+      applyBtn.textContent = "Change model";
+      applyBtn.addEventListener("click", async () => {
+        try {
+          await amp.setEffectModel(catalog, 3, currentPresetId, slot.slotId, model.model_id, select.value);
+          log(`model change sent; press "Read current preset's effects" to refresh`);
+        } catch (e) { log(`model change failed: ${e.message || e}`); }
+      });
+      row.appendChild(select);
+      row.appendChild(applyBtn);
+    }
+    div.appendChild(row);
+
+    if (model) {
+      const byId = new Map(model.parameters.map(p => [p.parameter_id, p]));
+      for (const param of slot.parameters) {
+        const def = byId.get(param.parameterId);
+        if (!def) continue;
+        const uiValue = def.wire_multiplier ? param.value / def.wire_multiplier : param.value;
+        const pr = document.createElement("div");
+        pr.className = "param-row";
+        const label = document.createElement("label");
+        label.textContent = def.name || `param ${param.parameterId}`;
+        const input = document.createElement("input");
+        input.type = "range";
+        input.min = def.ui_min; input.max = def.ui_max; input.step = def.ui_step || 1;
+        input.value = uiValue;
+        const out = document.createElement("output");
+        out.textContent = uiValue;
+        input.addEventListener("input", () => { out.textContent = input.value; });
+        input.addEventListener("change", async () => {
+          try {
+            await amp.setEffectParameter(3, currentPresetId, slot, param.parameterId,
+                                          Number(input.value), def.wire_multiplier || 1.0);
+          } catch (e) { log(`parameter set failed: ${e.message || e}`); }
+        });
+        pr.appendChild(label); pr.appendChild(input); pr.appendChild(out);
+        div.appendChild(pr);
+      }
+    }
+    container.appendChild(div);
+  }
+}
+
+// ---- mixer ----
+
+const masterSlider = document.getElementById("masterSlider");
+const masterOut = document.getElementById("masterOut");
+masterSlider.addEventListener("input", () => { masterOut.textContent = masterSlider.value; });
+
+document.getElementById("readMasterBtn").addEventListener("click", async () => {
+  try {
+    const v = await amp.getMasterVolume();
+    masterSlider.value = v.volume;
+    masterOut.textContent = v.volume;
+    log(`master volume: ${v.volume}`);
+  } catch (e) { log(`read master volume failed: ${e.message || e}`); }
+});
+
+document.getElementById("setMasterBtn").addEventListener("click", async () => {
+  try {
+    await amp.setMasterVolume(Number(masterSlider.value));
+  } catch (e) { log(`set master volume failed: ${e.message || e}`); }
+});
+
+const channelSlider = document.getElementById("channelSlider");
+const channelOut = document.getElementById("channelOut");
+channelSlider.addEventListener("input", () => { channelOut.textContent = channelSlider.value; });
+
+document.getElementById("readChannelBtn").addEventListener("click", async () => {
+  const picker = document.getElementById("channelPicker");
+  const statusEl3 = document.getElementById("channelStatus");
+  try {
+    const channel = Number(picker.value);
+    channelInput = await amp.getChannelInput(channel);
+    if (!channelInput.plugged) {
+      statusEl3.textContent = "nothing plugged into this channel";
+      return;
+    }
+    const v = await amp.getVolume(channel, channelInput.inputType);
+    channelSlider.value = v.volume;
+    channelOut.textContent = v.volume;
+    statusEl3.textContent = `input type ${channelInput.inputType}, volume ${v.volume}`;
+  } catch (e) { statusEl3.textContent = `read failed: ${e.message || e}`; }
+});
+
+document.getElementById("setChannelBtn").addEventListener("click", async () => {
+  try {
+    if (!channelInput || !channelInput.plugged) throw new Error('read the channel first');
+    const channel = Number(document.getElementById("channelPicker").value);
+    await amp.setChannelVolume(channel, channelInput.inputType, Number(channelSlider.value));
+  } catch (e) { log(`set channel volume failed: ${e.message || e}`); }
 });
 </script>
 </body>

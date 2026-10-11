@@ -1,17 +1,25 @@
 // Web Bluetooth client for the JBL BandBox Trio/Solo control service.
-// Same protocol as controls.py / ../re/PROTOCOL.md, ported to JS so the
-// whole GUI can run client-side with no native helper and no backend.
+// Same protocol as controls.py / preset_controls.py / effect_controls.py /
+// mixer_controls.py / ControlRequest.swift, ported to JS so the whole GUI
+// can run client-side with no native helper and no backend.
 //
 // Frame format (both write and notify):
 //   00 DD <command:u16 LE> <packet_count:u8> <packet_index:u8> <len:u16 LE> <payload>
-// Payload for a single-fragment write is one feature record, WITH an
-// explicit value-length field (confirmed against ControlRequest.swift's
-// packet() builder: `body = le(feature) + le(UInt16(value.count)) + value`
-// -- an earlier version of this file omitted the length field, which is
-// why preset selection didn't work (looper happened to work anyway: its
-// 1-byte values made the old, wrong framing coincide with the right one):
-//   <feature_id:u16 LE> <value_length:u16 LE> <value bytes>
-// (see docs/protocol.md and re/PROTOCOL.md for how this was derived/verified)
+//
+// Two payload shapes, confirmed against ControlRequest.swift's packet():
+//   command=1 (plain GET, no value):   <feature_id:u16 LE>                       (len always 2)
+//   command=2 (write / parameterized read): <feature_id:u16 LE> <value_len:u16 LE> <value bytes>
+// (An earlier version of this file used the command=2 shape for everything
+// and omitted the value_len field, which is why preset selection didn't
+// work at first -- see git history on this branch.)
+//
+// Effects (feature 0x3445) and mixer (0x3400/0x3401/0x3405/0x3406) need a
+// read before a write (current snapshot / current channel input), exactly
+// as effect_controls.py and mixer_controls.py require -- this isn't a
+// transport quirk, the device only accepts a complete, matching snapshot.
+// NONE of this (effects/mixer) has been exercised on real hardware yet;
+// only preset select and the looper commands have (see
+// ../re/PROTOCOL.md's "Hardware validation -- webble" table).
 
 const SERVICE_UUID = "65786365-6c70-6f69-6e74-2e636f6d0000";
 const WRITE_CHAR_UUID = "65786365-6c70-6f69-6e74-2e636f6d0002";
@@ -30,9 +38,26 @@ const LOOPER_COMMANDS = {
   pause: [LOOPER_PLAYBACK_ID, [0x02]],
 };
 
+// Effect feature 0x3445 value_layout (effect_catalog.json "wire" block):
+// channel, preset_id, change, slot_id, algorithm_id, config_id, bypass, value_count, (parameter_id, float32_le)*
+const EFFECT_FEATURE = 0x3445;
+const EFFECT_CHANGE = { model: null /* = current model's model_change_code */, bypass: 1, parameter: 4 };
+const BYPASS_ENCODING = { active: 0, bypassed: 1, omitted: 255 };
+
+function buildGetFrame(featureId) {
+  const frame = new Uint8Array(10);
+  frame[0] = 0x00; frame[1] = 0xdd;
+  frame[2] = 0x01; frame[3] = 0x00; // command = 1 (plain GET)
+  frame[4] = 0x01; frame[5] = 0x00; // packet_count=1, packet_index=0
+  frame[6] = 0x02; frame[7] = 0x00; // len = 2 (just the feature id)
+  frame[8] = featureId & 0xff;
+  frame[9] = (featureId >> 8) & 0xff;
+  return frame;
+}
+
 function buildFrame(featureId, valueBytes) {
-  // command=2 (write/request), packet_count=1, packet_index=0 -- matches
-  // every single-fragment write observed in captures.
+  // command=2 (write, or a parameterized read -- same wire shape either
+  // way; see ControlRequest.swift, setting_write only gates validation).
   const payload = new Uint8Array(4 + valueBytes.length);
   payload[0] = featureId & 0xff;
   payload[1] = (featureId >> 8) & 0xff;
@@ -79,7 +104,7 @@ function decodeFrame(dataView) {
     pos += 4;
     if (pos + length > payload.length) break;
     result.features.push({ id: "0x" + featureId.toString(16).toUpperCase().padStart(4, "0"),
-                            value: toHex(payload.slice(pos, pos + length)) });
+                            valueHex: toHex(payload.slice(pos, pos + length)) });
     pos += length;
   }
   return result;
@@ -89,11 +114,103 @@ function toHex(bytes) {
   return Array.from(bytes).map(b => b.toString(16).padStart(2, "0")).join("");
 }
 
+function hexToBytes(hex) {
+  const out = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.substr(i * 2, 2), 16);
+  return out;
+}
+
+function readFloat32LE(bytes, offset) {
+  return new DataView(bytes.buffer, bytes.byteOffset + offset, 4).getFloat32(0, true);
+}
+
+function writeFloat32LE(value) {
+  const b = new Uint8Array(4);
+  new DataView(b.buffer).setFloat32(0, value, true);
+  return b;
+}
+
+// ---- feature-value decoders (mirror current_preset.py / onboard_controls.py) ----
+
+function parseInventory(bytes) {
+  const records = [];
+  let pos = 0;
+  while (pos < bytes.length) {
+    const presetId = bytes[pos], genre = bytes[pos + 1], length = bytes[pos + 2];
+    pos += 3;
+    const name = new TextDecoder("utf-8").decode(bytes.slice(pos, pos + length));
+    pos += length;
+    records.push({ presetId, genre, name });
+  }
+  return records;
+}
+
+function parseSelection(bytes) {
+  return { channel: bytes[0], presetId: bytes[1] };
+}
+
+function parsePresetInfo(bytes) {
+  const presetId = bytes[0], genre = bytes[1], nameLength = bytes[2];
+  let pos = 3 + nameLength;
+  const name = new TextDecoder("utf-8").decode(bytes.slice(3, 3 + nameLength));
+  const slotCount = bytes[pos]; pos += 1;
+  const slots = [];
+  for (let s = 0; s < slotCount; s++) {
+    const slotId = bytes[pos], algorithmId = bytes[pos + 1], configId = bytes[pos + 2],
+          bypassRaw = bytes[pos + 3], parameterCount = bytes[pos + 4];
+    pos += 5;
+    const parameters = [];
+    for (let p = 0; p < parameterCount; p++) {
+      const parameterId = bytes[pos];
+      const value = readFloat32LE(bytes, pos + 1);
+      parameters.push({ parameterId, value });
+      pos += 5;
+    }
+    slots.push({ slotId, algorithmId, configId, bypassRaw, parameters });
+  }
+  return { presetId, genre, name, slots };
+}
+
+function parseChannelInput(bytes) {
+  return { channel: bytes[0], plugged: bytes[1] !== 0, inputType: bytes[2] };
+}
+
+function parseVolume(bytes) {
+  return { channel: bytes[0], inputType: bytes[1], volume: bytes[2] };
+}
+
+class EffectCatalog {
+  constructor(data) {
+    this.data = data;
+    this.byModelId = new Map(data.models.map(m => [m.model_id, m]));
+  }
+
+  static async load(url = "effect_catalog.json") {
+    const data = await (await fetch(url)).json();
+    return new EffectCatalog(data);
+  }
+
+  modelsForSlot(slotId) {
+    return this.data.models.filter(m => m.slot_id === slotId);
+  }
+
+  findModel(algorithmId, configId) {
+    return this.data.models.find(m => m.algorithm_id === algorithmId && m.config_id === configId);
+  }
+
+  model(modelId) {
+    const m = this.byModelId.get(modelId);
+    if (!m) throw new Error(`unknown model_id: ${modelId}`);
+    return m;
+  }
+}
+
 class BandBoxBLE {
   constructor(onLog) {
     this.onLog = onLog || (() => {});
     this.device = null;
     this.writeChar = null;
+    this.pending = []; // FIFO of {resolve, reject} for in-flight request()s
   }
 
   get deviceName() {
@@ -120,23 +237,39 @@ class BandBoxBLE {
     notifyChar.addEventListener("characteristicvaluechanged", (ev) => {
       const decoded = decodeFrame(ev.target.value);
       this.onLog(`<- notify: ${JSON.stringify(decoded)}`);
+      const waiter = this.pending.shift();
+      if (waiter) waiter.resolve(decoded);
     });
 
     this.onLog("connected, notifications enabled");
   }
 
-  async writeFeature(featureId, valueBytes) {
+  async _send(frame) {
     if (!this.writeChar) throw new Error("not connected");
-    const frame = buildFrame(featureId, valueBytes);
     this.onLog(`-> write: ${toHex(frame)}`);
-    // write-without-response matches the captures (opcode 0x52); fall back
-    // to a confirmed write if the characteristic doesn't support it.
     if (this.writeChar.properties.writeWithoutResponse) {
       await this.writeChar.writeValueWithoutResponse(frame);
     } else {
       await this.writeChar.writeValueWithResponse(frame);
     }
   }
+
+  /** Send a frame and resolve with the next notification (the device
+   * answers one request at a time in every capture seen so far). */
+  async request(frame, timeoutMs = 4000) {
+    const promise = new Promise((resolve, reject) => {
+      this.pending.push({ resolve, reject });
+      setTimeout(() => reject(new Error("timed out waiting for a response")), timeoutMs);
+    });
+    await this._send(frame);
+    return promise;
+  }
+
+  async writeFeature(featureId, valueBytes) {
+    return this._send(buildFrame(featureId, valueBytes));
+  }
+
+  // ---- preset select / looper (verified on hardware) ----
 
   async selectPreset(channel, presetId) {
     return this.writeFeature(0x3442, [channel & 0xff, presetId & 0xff]);
@@ -147,5 +280,98 @@ class BandBoxBLE {
     if (!cmd) throw new Error(`unknown looper action: ${action}`);
     const [featureId, value] = cmd;
     return this.writeFeature(featureId, value);
+  }
+
+  // ---- reads (not yet exercised on hardware) ----
+
+  async getInventory() {
+    const resp = await this.request(buildGetFrame(0x3440));
+    const feature = (resp.features || []).find(f => f.id === "0x3440");
+    if (!feature) throw new Error("no 0x3440 feature in response");
+    return parseInventory(hexToBytes(feature.valueHex));
+  }
+
+  async getSelection(channel) {
+    const resp = await this.request(buildFrame(0x3441, [channel]));
+    const feature = (resp.features || []).find(f => f.id === "0x3442");
+    if (!feature) throw new Error("no 0x3442 feature in response");
+    return parseSelection(hexToBytes(feature.valueHex));
+  }
+
+  async getPresetDetail(presetId) {
+    const resp = await this.request(buildFrame(0x3443, [presetId]));
+    const feature = (resp.features || []).find(f => f.id === "0x3444");
+    if (!feature) throw new Error("no 0x3444 feature in response");
+    return parsePresetInfo(hexToBytes(feature.valueHex));
+  }
+
+  async getChannelInput(channel) {
+    const resp = await this.request(buildFrame(0x3400, [channel]));
+    const feature = (resp.features || []).find(f => f.id === "0x3401");
+    if (!feature) throw new Error("no 0x3401 feature in response");
+    return parseChannelInput(hexToBytes(feature.valueHex));
+  }
+
+  async getVolume(channel, inputType) {
+    const resp = await this.request(buildFrame(0x3405, [channel, inputType]));
+    const feature = (resp.features || []).find(f => f.id === "0x3406");
+    if (!feature) throw new Error("no 0x3406 feature in response");
+    return parseVolume(hexToBytes(feature.valueHex));
+  }
+
+  async getMasterVolume() {
+    return this.getVolume(0, 0);
+  }
+
+  // ---- effect writes (need a slot read first -- see class docstring) ----
+
+  /** slotSnapshot: one entry from getPresetDetail(presetId).slots. */
+  async setEffectModel(catalog, channel, presetId, slotId, currentModelId, targetModelId) {
+    const current = catalog.model(currentModelId);
+    const target = catalog.model(targetModelId);
+    if (target.slot_id !== slotId) throw new Error("model is not allowed in this slot");
+    if (currentModelId === targetModelId) throw new Error("that model is already selected");
+    const value = new Uint8Array([
+      channel, presetId, current.model_change_code, slotId,
+      target.algorithm_id, target.config_id, BYPASS_ENCODING.omitted, 0,
+    ]);
+    return this.writeFeature(EFFECT_FEATURE, value);
+  }
+
+  async setEffectBypass(channel, presetId, slotSnapshot, active) {
+    const bypassRaw = active ? BYPASS_ENCODING.active : BYPASS_ENCODING.bypassed;
+    if (slotSnapshot.bypassRaw === bypassRaw) throw new Error("already in that bypass state");
+    const params = slotSnapshot.parameters;
+    const value = new Uint8Array(8 + params.length * 5);
+    value.set([channel, presetId, EFFECT_CHANGE.bypass, slotSnapshot.slotId,
+                slotSnapshot.algorithmId, slotSnapshot.configId, bypassRaw, params.length], 0);
+    let pos = 8;
+    for (const p of params) {
+      value[pos] = p.parameterId;
+      value.set(writeFloat32LE(p.value), pos + 1);
+      pos += 5;
+    }
+    return this.writeFeature(EFFECT_FEATURE, value);
+  }
+
+  /** uiValue is the UI-scale integer; wireMultiplier comes from the catalog
+   * parameter definition (1.0 for almost everything, 0.1 for Compressor Ratio). */
+  async setEffectParameter(channel, presetId, slotSnapshot, parameterId, uiValue, wireMultiplier) {
+    const value = new Uint8Array(13);
+    value.set([channel, presetId, EFFECT_CHANGE.parameter, slotSnapshot.slotId,
+                slotSnapshot.algorithmId, slotSnapshot.configId, slotSnapshot.bypassRaw, 1], 0);
+    value[8] = parameterId;
+    value.set(writeFloat32LE(uiValue * wireMultiplier), 9);
+    return this.writeFeature(EFFECT_FEATURE, value);
+  }
+
+  // ---- mixer writes ----
+
+  async setMasterVolume(value) {
+    return this.writeFeature(0x3406, [0, 0, value]);
+  }
+
+  async setChannelVolume(channel, inputType, value) {
+    return this.writeFeature(0x3406, [channel, inputType, value]);
   }
 }

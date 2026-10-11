@@ -229,3 +229,18 @@ record = `0x3140` value 1 byte. This repo documents many more features
 | looper start/stop | OK (loop recorded ~42 s) | to do |
 | looper delete | OK | to do |
 | looper pause/play/undo | to do | to do |
+
+## Hardware validation — webble (Web Bluetooth, Trio)
+
+Confirmed via the `webble/` client (branch `web-bluetooth`), live on real
+hardware:
+
+| Command | Result |
+|---|---|
+| preset select | OK |
+| looper start | OK — begins recording |
+| looper stop | OK — ends recording, **playback starts immediately** (normal looper-pedal behavior, not a bug) |
+| looper pause | OK — stops playback |
+| looper play/resume | OK — resumes playback |
+| looper delete/clear | OK — clears the loop |
+| looper undo | sent, effect on the amp not confirmed yet |

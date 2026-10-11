@@ -11,10 +11,11 @@ real hardware in `../re/PROTOCOL.md`. Everything else in `controls.py`
 `../README.md`'s validation status for what's hardware-confirmed to port
 next.
 
-**Status: connect + preset select confirmed working end-to-end on real
-hardware** (Chrome, `navigator.bluetooth`, no backend). Looper: at least one
-command confirmed working, full start/stop/undo/delete/play/pause sweep
-still pending.
+**Status: confirmed working end-to-end on real hardware** (Chrome,
+`navigator.bluetooth`, no backend) — preset select, and looper
+start/stop/pause/play/delete all confirmed on the Trio; see
+`../re/PROTOCOL.md`'s "Hardware validation — webble" table. `undo` was sent
+but its effect on the amp hasn't been confirmed yet.
 
 ## Run it
 

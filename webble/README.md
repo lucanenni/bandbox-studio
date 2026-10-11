@@ -11,6 +11,11 @@ real hardware in `../re/PROTOCOL.md`. Everything else in `controls.py`
 `../README.md`'s validation status for what's hardware-confirmed to port
 next.
 
+**Status: connect + preset select confirmed working end-to-end on real
+hardware** (Chrome, `navigator.bluetooth`, no backend). Looper: at least one
+command confirmed working, full start/stop/undo/delete/play/pause sweep
+still pending.
+
 ## Run it
 
 Needs **Chrome, Edge, or Opera** — Safari and every iOS browser do not

@@ -4,8 +4,13 @@
 //
 // Frame format (both write and notify):
 //   00 DD <command:u16 LE> <packet_count:u8> <packet_index:u8> <len:u16 LE> <payload>
-// Payload for a single-fragment write is one feature record:
-//   <feature_id:u16 LE> <value bytes>
+// Payload for a single-fragment write is one feature record, WITH an
+// explicit value-length field (confirmed against ControlRequest.swift's
+// packet() builder: `body = le(feature) + le(UInt16(value.count)) + value`
+// -- an earlier version of this file omitted the length field, which is
+// why preset selection didn't work (looper happened to work anyway: its
+// 1-byte values made the old, wrong framing coincide with the right one):
+//   <feature_id:u16 LE> <value_length:u16 LE> <value bytes>
 // (see docs/protocol.md and re/PROTOCOL.md for how this was derived/verified)
 
 const SERVICE_UUID = "65786365-6c70-6f69-6e74-2e636f6d0000";
@@ -15,22 +20,25 @@ const NOTIFY_CHAR_UUID = "65786365-6c70-6f69-6e74-2e636f6d0001";
 const LOOPER_ID = 0x3140; // record transport: start/stop/undo/delete
 const LOOPER_PLAYBACK_ID = 0x3145; // play/pause
 
+// One-byte enum values (see ControlRequest.swift's switch on `feature`).
 const LOOPER_COMMANDS = {
-  start: [LOOPER_ID, [0x01, 0x00, 0x01]],
-  stop: [LOOPER_ID, [0x01, 0x00, 0x00]],
-  undo: [LOOPER_ID, [0x01, 0x00, 0x04]],
-  delete: [LOOPER_ID, [0x01, 0x00, 0x05]],
-  play: [LOOPER_PLAYBACK_ID, [0x01, 0x00, 0x03]],
-  pause: [LOOPER_PLAYBACK_ID, [0x01, 0x00, 0x02]],
+  start: [LOOPER_ID, [0x01]],
+  stop: [LOOPER_ID, [0x00]],
+  undo: [LOOPER_ID, [0x04]],
+  delete: [LOOPER_ID, [0x05]],
+  play: [LOOPER_PLAYBACK_ID, [0x03]],
+  pause: [LOOPER_PLAYBACK_ID, [0x02]],
 };
 
 function buildFrame(featureId, valueBytes) {
   // command=2 (write/request), packet_count=1, packet_index=0 -- matches
   // every single-fragment write observed in captures.
-  const payload = new Uint8Array(2 + valueBytes.length);
+  const payload = new Uint8Array(4 + valueBytes.length);
   payload[0] = featureId & 0xff;
   payload[1] = (featureId >> 8) & 0xff;
-  payload.set(valueBytes, 2);
+  payload[2] = valueBytes.length & 0xff;       // value length, LE
+  payload[3] = (valueBytes.length >> 8) & 0xff;
+  payload.set(valueBytes, 4);
 
   const frame = new Uint8Array(8 + payload.length);
   frame[0] = 0x00; frame[1] = 0xdd;          // identifier 0xDD00, LE

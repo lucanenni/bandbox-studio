@@ -54,6 +54,20 @@ https (not opened as a local file://).</p>
 </div>
 <div id="slots"></div>
 
+<h2>Preset save / duplicate / rename <span class="unverified">(not yet verified on hardware)</span></h2>
+<p>These act on the currently <strong>selected</strong> preset (select it above first).</p>
+<div class="row">
+  <input id="opName" type="text" placeholder="name" style="flex:1" disabled>
+  <input id="opGenre" type="number" min="0" max="7" value="0" style="width:60px" disabled title="genre (0-7)">
+  <button id="duplicateBtn" disabled>Duplicate as new</button>
+  <button id="saveAsBtn" disabled>Save as new</button>
+</div>
+<div class="row">
+  <button id="saveUserBtn" disabled>Save (overwrite, user preset only)</button>
+  <button id="renameBtn" disabled>Rename (user preset only)</button>
+  <span id="opStatus"></span>
+</div>
+
 <h2>Mixer <span class="unverified">(not yet verified on hardware)</span></h2>
 <div class="row">
   <button id="readMasterBtn" disabled>Read master volume</button>
@@ -98,7 +112,8 @@ function setConnected(connected) {
   statusEl.textContent = connected ? `connected: ${amp.deviceName}` : "disconnected";
   document.querySelectorAll(
     "#presetButtons button, [data-looper], #readPresetBtn, #readMasterBtn, #setMasterBtn, " +
-    "#masterSlider, #channelPicker, #readChannelBtn, #setChannelBtn, #channelSlider"
+    "#masterSlider, #channelPicker, #readChannelBtn, #setChannelBtn, #channelSlider, " +
+    "#opName, #opGenre, #duplicateBtn, #saveAsBtn, #saveUserBtn, #renameBtn"
   ).forEach(b => b.disabled = !connected);
 }
 
@@ -222,6 +237,49 @@ function renderSlots(detail) {
     container.appendChild(div);
   }
 }
+
+// ---- preset save / duplicate / rename ----
+
+document.getElementById("duplicateBtn").addEventListener("click", async () => {
+  const statusEl4 = document.getElementById("opStatus");
+  try {
+    if (!currentPresetId) throw new Error("select a preset first");
+    const name = document.getElementById("opName").value;
+    const genre = Number(document.getElementById("opGenre").value);
+    const result = await amp.duplicatePreset(3, currentPresetId, name, genre);
+    statusEl4.textContent = `duplicated as new preset ${result.newPresetId}: ${result.name}`;
+  } catch (e) { statusEl4.textContent = `duplicate failed: ${e.message || e}`; }
+});
+
+document.getElementById("saveAsBtn").addEventListener("click", async () => {
+  const statusEl4 = document.getElementById("opStatus");
+  try {
+    if (!currentPresetId) throw new Error("select a preset first");
+    const name = document.getElementById("opName").value;
+    const genre = Number(document.getElementById("opGenre").value);
+    const result = await amp.saveAsPreset(3, currentPresetId, name, genre);
+    statusEl4.textContent = `saved as new preset ${result.newPresetId}: ${result.name}`;
+  } catch (e) { statusEl4.textContent = `save as failed: ${e.message || e}`; }
+});
+
+document.getElementById("saveUserBtn").addEventListener("click", async () => {
+  const statusEl4 = document.getElementById("opStatus");
+  try {
+    if (!currentPresetId) throw new Error("select a preset first");
+    const result = await amp.saveUserPreset(3, currentPresetId);
+    statusEl4.textContent = `saved preset ${result.sourceId ?? currentPresetId}`;
+  } catch (e) { statusEl4.textContent = `save failed: ${e.message || e}`; }
+});
+
+document.getElementById("renameBtn").addEventListener("click", async () => {
+  const statusEl4 = document.getElementById("opStatus");
+  try {
+    if (!currentPresetId) throw new Error("select a preset first");
+    const name = document.getElementById("opName").value;
+    const result = await amp.renamePreset(3, currentPresetId, name);
+    statusEl4.textContent = `renamed preset ${result.sourceId ?? currentPresetId} to "${result.name}"`;
+  } catch (e) { statusEl4.textContent = `rename failed: ${e.message || e}`; }
+});
 
 // ---- mixer ----
 

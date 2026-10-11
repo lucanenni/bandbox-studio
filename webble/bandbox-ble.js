@@ -17,8 +17,10 @@
 // read before a write (current snapshot / current channel input), exactly
 // as effect_controls.py and mixer_controls.py require -- this isn't a
 // transport quirk, the device only accepts a complete, matching snapshot.
-// NONE of this (effects/mixer) has been exercised on real hardware yet;
-// only preset select and the looper commands have (see
+// Preset save/duplicate/rename (0x3446) need the target preset to be the
+// one currently selected, same precondition as controls.py's Controls class.
+// NONE of this (effects/mixer/save/duplicate/rename) has been exercised on
+// real hardware yet; only preset select and the looper commands have (see
 // ../re/PROTOCOL.md's "Hardware validation -- webble" table).
 
 const SERVICE_UUID = "65786365-6c70-6f69-6e74-2e636f6d0000";
@@ -43,6 +45,12 @@ const LOOPER_COMMANDS = {
 const EFFECT_FEATURE = 0x3445;
 const EFFECT_CHANGE = { model: null /* = current model's model_change_code */, bypass: 1, parameter: 4 };
 const BYPASS_ENCODING = { active: 0, bypassed: 1, omitted: 255 };
+
+// Preset operations (feature 0x3446), ported from preset_controls.py's
+// _operation(): duplicate/save_as create a new preset (device assigns the
+// ID), rename/save_user_preset mutate the existing one in place.
+const PRESET_OPERATION_FEATURE = 0x3446;
+const PRESET_OPERATIONS = { duplicate: 1, rename: 3, save_user_preset: 4, save_as: 9 };
 
 function buildGetFrame(featureId) {
   const frame = new Uint8Array(10);
@@ -177,6 +185,37 @@ function parseChannelInput(bytes) {
 
 function parseVolume(bytes) {
   return { channel: bytes[0], inputType: bytes[1], volume: bytes[2] };
+}
+
+function encodePresetName(name) {
+  const bytes = new TextEncoder().encode(name);
+  if (bytes.length > 255) throw new Error("preset name exceeds the one-byte UTF-8 length field");
+  return bytes;
+}
+
+// Mirrors preset_controls.py's _operation(): channel, op code, source_id,
+// 255 (destination is device-assigned, never sent), genre (255 if omitted),
+// name length, name bytes.
+function buildOperationValue(action, channel, sourceId, name, genre) {
+  const encoded = name == null ? new Uint8Array(0) : encodePresetName(name);
+  const value = new Uint8Array(6 + encoded.length);
+  value.set([channel, PRESET_OPERATIONS[action], sourceId, 255,
+             genre == null ? 255 : genre, encoded.length], 0);
+  value.set(encoded, 6);
+  return value;
+}
+
+// Mirrors preset_controls.py's _fields(): same layout, 255 = omitted.
+function parseOperationFields(bytes) {
+  const nameLength = bytes[5];
+  if (bytes.length !== 6 + nameLength) throw new Error("operation response length does not match its name field");
+  return {
+    channel: bytes[0], operation: bytes[1],
+    sourceId: bytes[2] === 255 ? null : bytes[2],
+    newPresetId: bytes[3] === 255 ? null : bytes[3],
+    genre: bytes[4] === 255 ? null : bytes[4],
+    name: new TextDecoder("utf-8").decode(bytes.slice(6, 6 + nameLength)),
+  };
 }
 
 class EffectCatalog {
@@ -363,6 +402,39 @@ class BandBoxBLE {
     value[8] = parameterId;
     value.set(writeFloat32LE(uiValue * wireMultiplier), 9);
     return this.writeFeature(EFFECT_FEATURE, value);
+  }
+
+  // ---- preset save/duplicate/rename (need current selection to match
+  // sourceId -- same precondition as the Python controller) ----
+
+  async presetOperation(action, channel, sourceId, name, genre) {
+    const value = buildOperationValue(action, channel, sourceId, name, genre);
+    const resp = await this.request(buildFrame(PRESET_OPERATION_FEATURE, value));
+    const feature = (resp.features || []).find(f => f.id === "0x3446");
+    if (!feature) throw new Error("no 0x3446 feature in response");
+    return parseOperationFields(hexToBytes(feature.valueHex));
+  }
+
+  /** Duplicate the selected sourceId into a new preset; device assigns newPresetId. */
+  async duplicatePreset(channel, sourceId, name, genre) {
+    return this.presetOperation("duplicate", channel, sourceId, name, genre);
+  }
+
+  /** Save the current preview as a new preset, preserving sourceId. */
+  async saveAsPreset(channel, sourceId, name, genre) {
+    return this.presetOperation("save_as", channel, sourceId, name, genre);
+  }
+
+  /** Overwrite a USER preset (ID 51+) with the current preview. */
+  async saveUserPreset(channel, presetId) {
+    if (presetId < 51) throw new Error("only user presets (ID 51+) can be saved this way");
+    return this.presetOperation("save_user_preset", channel, presetId, null, null);
+  }
+
+  /** Rename a USER preset (ID 51+) without changing its sound. */
+  async renamePreset(channel, presetId, name) {
+    if (presetId < 51) throw new Error("only user presets (ID 51+) can be renamed");
+    return this.presetOperation("rename", channel, presetId, name, null);
   }
 
   // ---- mixer writes ----

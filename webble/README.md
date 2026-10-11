@@ -5,11 +5,12 @@ client-side, with no Swift helper and no backend process, using the Web
 Bluetooth API?
 
 **Scope of this PoC**: connect, preset select (channel 3, 27 factory
-presets), and the full looper command set — the subset already verified on
-real hardware in `../re/PROTOCOL.md`. Everything else in `controls.py`
-(effects, mixer, save/duplicate/rename) is not ported yet; see
-`../README.md`'s validation status for what's hardware-confirmed to port
-next.
+presets), the full looper command set, effects (model/bypass/parameter),
+mixer (volume read/write), and preset save/duplicate/rename. All of
+`controls.py`'s request builders are now ported. Preset select and looper
+are confirmed on real hardware (see `../re/PROTOCOL.md`'s validation
+table); effects, mixer, and save/duplicate/rename are only byte-verified
+against the Python reference so far, not yet exercised on an amp.
 
 **Status: confirmed working end-to-end on real hardware** (Chrome,
 `navigator.bluetooth`, no backend) — preset select, and looper
@@ -44,8 +45,9 @@ once first; see `../re/BLE_SNIFFING_SETUP.md` for background on this).
 
 The plan for feature parity with the native GUI:
 
-1. Port the rest of `controls.py`'s request builders (effects, mixer,
-   save/duplicate/rename) to this same JS client.
+1. ~~Port the rest of `controls.py`'s request builders (effects, mixer,
+   save/duplicate/rename) to this same JS client.~~ Done — pending hardware
+   validation of everything except preset select/looper.
 2. Decide whether `gui_server.py` stays as a plain static file server (it
    would no longer need to talk to any Swift helper — just serve
    `gui/index.html` and friends) or whether the static files move here and

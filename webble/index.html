@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>BandBox — Web Bluetooth proof of concept</title>
+<style>
+  body { font: 14px/1.4 -apple-system, system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; }
+  button { font-size: 14px; padding: 0.4rem 0.8rem; margin: 0.15rem; cursor: pointer; }
+  button:disabled { opacity: 0.4; cursor: default; }
+  h2 { margin-top: 2rem; font-size: 1rem; border-bottom: 1px solid #ccc; padding-bottom: 0.3rem; }
+  #status { font-weight: 600; }
+  #log { background: #111; color: #0f0; font-family: ui-monospace, monospace; font-size: 12px;
+         padding: 0.6rem; height: 220px; overflow-y: auto; white-space: pre-wrap; border-radius: 6px; }
+  .row { display: flex; gap: 0.3rem; flex-wrap: wrap; align-items: center; }
+  .warn { color: #a00; font-size: 13px; }
+</style>
+</head>
+<body>
+
+<h1>BandBox Web Bluetooth PoC</h1>
+<p class="warn">Chrome / Edge / Opera only — Safari and all iOS browsers do not
+implement the Web Bluetooth API. Must be served over http://localhost or
+https (not opened as a local file://).</p>
+
+<div class="row">
+  <button id="connectBtn">Connect to BandBox</button>
+  <span id="status">disconnected</span>
+</div>
+
+<h2>Preset (channel 3 — Trio guitar path)</h2>
+<div class="row" id="presetButtons"></div>
+
+<h2>Looper</h2>
+<div class="row">
+  <button data-looper="start">Record start</button>
+  <button data-looper="stop">Record stop</button>
+  <button data-looper="undo">Undo</button>
+  <button data-looper="delete">Delete/clear</button>
+  <button data-looper="play">Play/resume</button>
+  <button data-looper="pause">Pause</button>
+</div>
+
+<h2>Log</h2>
+<div id="log"></div>
+
+<script src="bandbox-ble.js"></script>
+<script>
+const amp = new BandBoxBLE(line => log(line));
+const statusEl = document.getElementById("status");
+const logEl = document.getElementById("log");
+
+function log(line) {
+  const ts = new Date().toLocaleTimeString();
+  logEl.textContent += `[${ts}] ${line}\n`;
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function setConnected(connected) {
+  statusEl.textContent = connected ? `connected: ${amp.deviceName}` : "disconnected";
+  document.querySelectorAll("#presetButtons button, [data-looper]").forEach(b => b.disabled = !connected);
+}
+
+document.getElementById("connectBtn").addEventListener("click", async () => {
+  try {
+    await amp.connect();
+    setConnected(true);
+  } catch (e) {
+    log(`connect failed: ${e.message || e}`);
+  }
+});
+
+// 27 factory presets, flat 1-based index (see ../re/PROTOCOL.md)
+const presetButtons = document.getElementById("presetButtons");
+for (let i = 1; i <= 27; i++) {
+  const b = document.createElement("button");
+  b.textContent = i;
+  b.disabled = true;
+  b.addEventListener("click", () => amp.selectPreset(3, i).catch(e => log(`select failed: ${e.message || e}`)));
+  presetButtons.appendChild(b);
+}
+
+document.querySelectorAll("[data-looper]").forEach(b => {
+  b.addEventListener("click", () => amp.looper(b.dataset.looper).catch(e => log(`looper failed: ${e.message || e}`)));
+});
+</script>
+</body>
+</html>

@@ -3,9 +3,9 @@
 bypassing JBL One — validates re/PROTOCOL.md before building the bridge
 firmware. Uses bleak (already installed), CoreBluetooth backend on macOS.
 
-Service/characteristic UUIDs recovered from the GATT discovery captured in
-bandboxtrio_01.btsnoop (vendor base UUID leaks "excelpoint.com", the BLE
-module maker):
+Service/characteristic UUIDs recovered from a GATT discovery capture (see
+../PROTOCOL.md; vendor base UUID leaks "excelpoint.com", the BLE module
+maker):
   service:  65786365-6c70-6f69-6e74-2e636f6d0000
   write:    65786365-6c70-6f69-6e74-2e636f6d0002   (ATT handle 0x03ea)
   notify:   65786365-6c70-6f69-6e74-2e636f6d0001   (ATT handle 0x03ec)

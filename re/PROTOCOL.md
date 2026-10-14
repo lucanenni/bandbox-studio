@@ -6,9 +6,10 @@ repo rather than folded into it. See `../docs/protocol.md` for this repo's
 own protocol reference; this folder predates it and was cross-checked
 against it (see "Header fix" below).
 
-Based on `re/captures/bandboxtrio_01.btsnoop` (first capture, ~18s,
-connection + browsing in the app). ATT decoded via tshark (see
-`re/probes/parse_btsnoop.py`).
+Based on a first capture (~18s, connection + browsing in the app; the raw
+`.btsnoop` is not kept in this repo since it embeds real device MAC
+addresses and the amp's serial number -- only the decoded findings below
+survive). ATT decoded via tshark (see `re/probes/parse_btsnoop.py`).
 
 ## GATT — relevant handles
 
@@ -41,8 +42,8 @@ Every payload (write or notify) starts with the same header:
 ## Concrete findings
 
 - **Device name/model** (notify, t≈9.85s): payload contains the ASCII
-  string `"JBL BandBox Trio"` followed by `"RR0020-KP0001331"`
-  (model/serial) — confirms the framing decode is correct.
+  string `"JBL BandBox Trio"` followed by a model/serial string (format
+  `RR0020-KPxxxxxxx`) — confirms the framing decode is correct.
 - **Preset list** (large notify, t≈12.999s, two consecutive frames):
   readable ASCII strings — `Clean Comping`, `Pop Clean`, `Vintage Trem`,
   `Smooth Jazz`, `Soulful Verb`, `R&B All Night`, `Disco Twang`,

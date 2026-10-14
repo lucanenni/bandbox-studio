@@ -19,8 +19,11 @@ matrix.
   the amp (iPhone + PacketLogger over USB).
 - `PROTOCOL.md` — the protocol findings themselves (preset select, looper
   start/stop/undo/delete/play/pause), including the Solo validation matrix.
-- `captures/` — the raw `.btsnoop`/`.pklg` captures and
-  `CAPTURE_LOG_TEMPLATE.md` used while sniffing.
+- `captures/` — `bandboxtrio_01_att.tsv` (ATT frames decoded from the first
+  capture) and `CAPTURE_LOG_TEMPLATE.md` used while sniffing. The raw
+  `.btsnoop`/`.pklg` files aren't kept here: they embed real BLE MAC
+  addresses and the amp's serial number, and everything useful from them is
+  already distilled into `PROTOCOL.md`.
 - `probes/parse_btsnoop.py` — decodes a capture's ATT frames via tshark.
 - `probes/bandbox_ctl.py` — talks directly to the amp over BLE from a Mac
   (via `bleak`), bypassing JBL One entirely; used to validate commands on

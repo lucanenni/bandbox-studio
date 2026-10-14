@@ -8,13 +8,9 @@ func arg(_ name: String) -> String? {
     guard let i = CommandLine.arguments.firstIndex(of: name), i + 1 < CommandLine.arguments.count else { return nil }
     return CommandLine.arguments[i + 1]
 }
-// Discovery only. The Solo advertises/reports as "JBL BandBox Solo" and has
-// been confirmed to answer channel-select guitar-preset reads (preset_controls
-// accepts channel 1 or 3) -- see docs/protocol.md#bandbox-solo. Everything
-// else in this repo (effects, mixer, looper, save/duplicate/rename) still
-// hardcodes channel 3 in controls.py/DriveRoundTrip.swift and has not been
-// adapted or tested against a Solo; connecting one will let you read presets
-// but other operations are unverified and may behave incorrectly.
+// Discovery only -- the Solo advertises as "JBL BandBox Solo". See
+// docs/protocol.md#bandbox-solo for what's actually verified vs. still
+// channel-3-only beyond that.
 func isSupportedBandBoxName(_ name: String?) -> Bool {
     name == "JBL BandBox Trio" || name == "JBL BandBox Solo"
 }

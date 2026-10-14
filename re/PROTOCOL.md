@@ -11,10 +11,9 @@ bytes.
 
 Findings below come from a series of targeted BLE captures (PacketLogger,
 iPhone + Mac, one action per capture — see `BLE_SNIFFING_SETUP.md` and
-`captures/CAPTURE_LOG_TEMPLATE.md`). The raw `.btsnoop`/`.pklg` files
-aren't kept in this repo, since they embed real device MAC addresses and
-the amp's serial number; only the decoded `captures/bandboxtrio_01_att.tsv`
-and the findings distilled below survive.
+`captures/CAPTURE_LOG_TEMPLATE.md`). The raw captures aren't kept in this
+repo, since they embed real device MAC addresses and the amp's serial
+number; only the findings distilled below survive.
 
 ## GATT — relevant handles
 

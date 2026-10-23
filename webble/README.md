@@ -4,13 +4,19 @@ Experiment (branch `web-bluetooth`): can the whole control panel run
 client-side, with no Swift helper and no backend process, using the Web
 Bluetooth API?
 
-**Scope of this PoC**: connect, preset select (channel 3, 27 factory
-presets), the full looper command set, effects (model/bypass/parameter),
+**Scope of this PoC**: connect, preset select (27 factory presets),
+the full looper command set, effects (model/bypass/parameter),
 mixer (volume read/write), and preset save/duplicate/rename. All of
-`controls.py`'s request builders are now ported. Preset select and looper
-are confirmed on real hardware (see `../re/PROTOCOL.md`'s validation
-table); effects, mixer, and save/duplicate/rename are only byte-verified
-against the Python reference so far, not yet exercised on an amp.
+`controls.py`'s request builders are now ported. The guitar-path channel
+is a UI dropdown (Trio = 3, Solo = 1) rather than hardcoded, mirroring
+`Controls`' `channel` parameter on the native side -- `bandbox-ble.js`'s
+own methods already took `channel` as an argument throughout; only
+`index.html`'s call sites needed to stop passing a literal `3`. Preset
+select and looper are confirmed on real hardware (see
+`../re/PROTOCOL.md`'s validation table); effects, mixer,
+save/duplicate/rename, and the Trio/Solo channel switch itself are only
+byte-verified against the Python reference so far, not yet exercised on
+an amp.
 
 **Status: confirmed working end-to-end on real hardware** (Chrome,
 `navigator.bluetooth`, no backend) — preset select, and looper
@@ -29,10 +35,16 @@ cd webble
 python3 -m http.server 8765
 ```
 
-Open `http://localhost:8765` in Chrome/Edge, click **Connect to BandBox**,
-pick the amp from the browser's device picker (it must already be
-discoverable — if it doesn't show up, press the amp's Bluetooth button
-once first; see `../re/BLE_SNIFFING_SETUP.md` for background on this).
+Open `http://localhost:8765` in Chrome/Edge, pick **Trio** or **Solo**
+from the amp dropdown, click **Connect to BandBox**, then pick the amp
+from the browser's device picker (it must already be discoverable — if
+it doesn't show up, press the amp's Bluetooth button once first; see
+`../re/BLE_SNIFFING_SETUP.md` for background on this). The Solo has been
+seen advertising with no name at all (see `docs/protocol.md#bandbox-solo`
+on `main`); whether Chrome's native picker still lists it in that case
+is unverified -- `tools/bandbox_ctl.py`'s anonymous-candidate fallback
+has no Web Bluetooth equivalent, since `requestDevice()` only exposes the
+browser's own chooser UI, not raw scan results.
 
 ## Files
 

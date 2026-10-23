@@ -34,7 +34,14 @@ https (not opened as a local file://).</p>
   <span id="status">disconnected</span>
 </div>
 
-<h2>Preset (channel 3 — Trio guitar path)</h2>
+<div class="row">
+  <label>Amp: <select id="ampModel">
+    <option value="3">Trio (channel 3)</option>
+    <option value="1">Solo (channel 1)</option>
+  </select></label>
+</div>
+
+<h2>Preset</h2>
 <div class="row" id="presetButtons"></div>
 
 <h2>Looper</h2>
@@ -102,6 +109,10 @@ let currentPresetId = null;
 let currentDetail = null; // last getPresetDetail() result
 let channelInput = null;  // last getChannelInput() result
 
+function guitarChannel() {
+  return Number(document.getElementById("ampModel").value);
+}
+
 function log(line) {
   const ts = new Date().toLocaleTimeString();
   logEl.textContent += `[${ts}] ${line}\n`;
@@ -137,7 +148,7 @@ for (let i = 1; i <= 27; i++) {
   b.disabled = true;
   b.addEventListener("click", () => {
     currentPresetId = i;
-    amp.selectPreset(3, i).catch(e => log(`select failed: ${e.message || e}`));
+    amp.selectPreset(guitarChannel(), i).catch(e => log(`select failed: ${e.message || e}`));
   });
   presetButtons.appendChild(b);
 }
@@ -151,7 +162,7 @@ document.querySelectorAll("[data-looper]").forEach(b => {
 document.getElementById("readPresetBtn").addEventListener("click", async () => {
   const statusEl2 = document.getElementById("presetReadStatus");
   try {
-    const selection = await amp.getSelection(3);
+    const selection = await amp.getSelection(guitarChannel());
     currentPresetId = selection.presetId;
     currentDetail = await amp.getPresetDetail(selection.presetId);
     statusEl2.textContent = `preset ${selection.presetId}: ${currentDetail.name}`;
@@ -179,7 +190,7 @@ function renderSlots(detail) {
     bypassBtn.textContent = slot.bypassRaw === 1 ? "Enable" : "Bypass";
     bypassBtn.addEventListener("click", async () => {
       try {
-        await amp.setEffectBypass(3, currentPresetId, slot, slot.bypassRaw === 1);
+        await amp.setEffectBypass(guitarChannel(), currentPresetId, slot, slot.bypassRaw === 1);
         log(`bypass toggled for slot ${slot.slotId}; press "Read current preset's effects" to refresh`);
       } catch (e) { log(`bypass failed: ${e.message || e}`); }
     });
@@ -198,7 +209,7 @@ function renderSlots(detail) {
       applyBtn.textContent = "Change model";
       applyBtn.addEventListener("click", async () => {
         try {
-          await amp.setEffectModel(catalog, 3, currentPresetId, slot.slotId, model.model_id, select.value);
+          await amp.setEffectModel(catalog, guitarChannel(), currentPresetId, slot.slotId, model.model_id, select.value);
           log(`model change sent; press "Read current preset's effects" to refresh`);
         } catch (e) { log(`model change failed: ${e.message || e}`); }
       });
@@ -226,7 +237,7 @@ function renderSlots(detail) {
         input.addEventListener("input", () => { out.textContent = input.value; });
         input.addEventListener("change", async () => {
           try {
-            await amp.setEffectParameter(3, currentPresetId, slot, param.parameterId,
+            await amp.setEffectParameter(guitarChannel(), currentPresetId, slot, param.parameterId,
                                           Number(input.value), def.wire_multiplier || 1.0);
           } catch (e) { log(`parameter set failed: ${e.message || e}`); }
         });
@@ -246,7 +257,7 @@ document.getElementById("duplicateBtn").addEventListener("click", async () => {
     if (!currentPresetId) throw new Error("select a preset first");
     const name = document.getElementById("opName").value;
     const genre = Number(document.getElementById("opGenre").value);
-    const result = await amp.duplicatePreset(3, currentPresetId, name, genre);
+    const result = await amp.duplicatePreset(guitarChannel(), currentPresetId, name, genre);
     statusEl4.textContent = `duplicated as new preset ${result.newPresetId}: ${result.name}`;
   } catch (e) { statusEl4.textContent = `duplicate failed: ${e.message || e}`; }
 });
@@ -257,7 +268,7 @@ document.getElementById("saveAsBtn").addEventListener("click", async () => {
     if (!currentPresetId) throw new Error("select a preset first");
     const name = document.getElementById("opName").value;
     const genre = Number(document.getElementById("opGenre").value);
-    const result = await amp.saveAsPreset(3, currentPresetId, name, genre);
+    const result = await amp.saveAsPreset(guitarChannel(), currentPresetId, name, genre);
     statusEl4.textContent = `saved as new preset ${result.newPresetId}: ${result.name}`;
   } catch (e) { statusEl4.textContent = `save as failed: ${e.message || e}`; }
 });
@@ -266,7 +277,7 @@ document.getElementById("saveUserBtn").addEventListener("click", async () => {
   const statusEl4 = document.getElementById("opStatus");
   try {
     if (!currentPresetId) throw new Error("select a preset first");
-    const result = await amp.saveUserPreset(3, currentPresetId);
+    const result = await amp.saveUserPreset(guitarChannel(), currentPresetId);
     statusEl4.textContent = `saved preset ${result.sourceId ?? currentPresetId}`;
   } catch (e) { statusEl4.textContent = `save failed: ${e.message || e}`; }
 });
@@ -276,7 +287,7 @@ document.getElementById("renameBtn").addEventListener("click", async () => {
   try {
     if (!currentPresetId) throw new Error("select a preset first");
     const name = document.getElementById("opName").value;
-    const result = await amp.renamePreset(3, currentPresetId, name);
+    const result = await amp.renamePreset(guitarChannel(), currentPresetId, name);
     statusEl4.textContent = `renamed preset ${result.sourceId ?? currentPresetId} to "${result.name}"`;
   } catch (e) { statusEl4.textContent = `rename failed: ${e.message || e}`; }
 });

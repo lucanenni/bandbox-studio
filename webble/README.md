@@ -56,4 +56,4 @@ The plan for feature parity with the native GUI:
    stdio, not in a browser, so Web Bluetooth doesn't help it. Making it
    cross-platform too would mean swapping the Swift helper for `bleak`
    (already proven to work against this exact device in
-   `../re/probes/bandbox_ctl.py`) on the MCP side specifically.
+   `../tools/bandbox_ctl.py`) on the MCP side specifically.

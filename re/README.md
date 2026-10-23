@@ -24,9 +24,11 @@ matrix.
   serial number, and everything useful from them is already distilled into
   `PROTOCOL.md`.
 - `probes/parse_btsnoop.py` — decodes a capture's ATT frames via tshark.
-- `probes/bandbox_ctl.py` — talks directly to the amp over BLE from a Mac
-  (via `bleak`), bypassing JBL One entirely; used to validate commands on
-  real hardware (both Trio and Solo).
+
+See `../tools/bandbox_ctl.py` for the direct-BLE validation script (via
+`bleak`, bypassing JBL One entirely) used to validate commands on real
+hardware (both Trio and Solo) -- it moved there from this folder since
+it's useful well beyond this independent-research scope.
 
 ## Why a bridge at all
 

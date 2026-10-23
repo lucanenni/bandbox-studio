@@ -113,7 +113,7 @@ the amp also sends a telemetry counter (ID `0x3142`) roughly once a
 second — loop position, not needed to drive the amp, only useful for
 optional visual feedback.
 
-## Direct validation from a Mac (`probes/bandbox_ctl.py`)
+## Direct validation from a Mac (`../tools/bandbox_ctl.py`)
 
 - **BandBox Solo**: `preset 5` verified on hardware (preset changed,
   report `42 34 02 00 01 05`). The Solo has a single channel: writing

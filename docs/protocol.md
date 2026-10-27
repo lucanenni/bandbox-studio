@@ -9,7 +9,55 @@ service (`65786365-…-0000`), and preset selection (feature `0x3442`) was
 confirmed on real hardware using guitar channel `1` instead of the Trio's
 channel `3` (the Solo has a single instrument input, no mic/vocal channel).
 `preset_controls.py`'s `_channel` already accepts `1` or `3`, and
-`BandBoxProbe.swift` now discovers both device names.
+`Controls`, `server.py`, and `DriveRoundTrip.swift` now take this channel
+as configuration (`BANDBOX_GUITAR_CHANNEL`, default `3`) instead of
+hardcoding it, so existing Trio setups are unaffected unless that variable
+is set.
+
+### Discovery: the Solo can advertise with no name at all
+
+`BandBoxProbe.swift` recognizes both `"JBL BandBox Trio"` and
+`"JBL BandBox Solo"` by name. But the Solo has also been observed
+advertising with **no name and no manufacturer data** -- its Bluetooth
+button may need a fresh press to make it discoverable at all, and even
+then the name doesn't always come through on the first advertisement.
+A name-only filter never finds it in that state.
+
+To handle this, discovery now runs in two passes:
+
+1. **Named pass** (unchanged): scan for `~5s` (`min(5.0, seconds/2)`),
+   collect peripherals whose advertised name matches either model. If
+   exactly one is found, connect to it as before.
+2. **Anonymous fallback** (new): if the named pass finds nothing, probe
+   every peripheral seen advertising with no name *and* no manufacturer
+   data, strongest RSSI first -- connect, ask only for the one control
+   service (`65786365-…-0000`, nothing broader), and either keep that
+   connection if the service is present or disconnect and try the next
+   candidate. This mirrors `tools/bandbox_ctl.py`'s `find_amp_client()`,
+   which needed the same fallback for the same reason.
+
+This means an anonymous-fallback run **does briefly connect to other
+nearby BLE peripherals** that happen to also advertise without a name
+(for example some headphones or fitness trackers) before finding or
+ruling each one out -- it only ever requests that single service UUID
+from them, never enumerates their other services or characteristics, and
+disconnects immediately on a non-match. The whole probe is still bounded
+by its existing `--seconds` deadline regardless of how many candidates it
+tries. New state backing this
+(`anonymousCandidates`, `probingAnonymous`, `ignoredDisconnects`) is kept
+separate from the single-target fields the rest of the file already used,
+so a rejected candidate's later disconnect callback can't be mistaken for
+the real target dropping.
+
+One asymmetry worth knowing: this fallback only runs during a full scan
+(no `--id` given). The `--id`-based fast path still requires
+`peripheral.name` to match, so it depends on CoreBluetooth having already
+cached the Solo's name from an earlier connection (which it does, in
+practice, once the anonymous fallback has connected to it once). If that
+cache is ever absent, `server.py`'s existing discovery-recovery path
+(re-running a full, nameless `inspect` scan when a cached identifier
+fails) already falls back to a full scan, which goes through the
+anonymous path again -- no special-casing needed there.
 
 The looper (features `0x3140`/`0x3145`, no channel byte at all) was also
 confirmed directly against a Solo via `tools/bandbox_ctl.py`: start, stop
@@ -94,12 +142,9 @@ nothing in the unit tests could catch either:
   With channel 1 this match never fired, so the detail query was never
   sent and the read never completed.
 
-Also fixed in the process: `BandBoxProbe.swift`'s discovery only matched
-named advertisements, so it never found the amp when it advertises
-anonymously (no name, no manufacturer data) -- observed on the Solo, and
-already handled by `tools/bandbox_ctl.py`'s fallback. Discovery now
-probes anonymous candidates the same way (connect, check for the control
-service) before giving up.
+Also fixed in the process: discovery's anonymous-advertising fallback
+(see above) didn't exist yet at this point in testing, so this run only
+succeeded once that was added.
 
 **A write through this path was also confirmed live**: `check_mcp.py
 --live-select-preset 1` (a new, deliberate opt-in flag, since the rest of

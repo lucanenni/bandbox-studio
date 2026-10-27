@@ -256,14 +256,75 @@ class BandBoxBLE {
     return this.device ? this.device.name : null;
   }
 
-  async connect() {
+  // showAll bypasses the name/service filters and lists every nearby BLE
+  // device instead. Needed because the Solo sometimes advertises with no
+  // name and without the control service UUID in its advertisement data
+  // (only exposed later via GATT), so neither filter below ever matches it
+  // -- unlike BandBoxProbe.swift's CoreBluetooth path, Web Bluetooth's
+  // requestDevice() chooser has no RSSI or other way to tell candidates
+  // apart, so in a crowded area (neighbors' BLE devices too) this alone
+  // isn't enough; see scanByRssi() below for a way to actually rank them.
+  async connect(showAll = false) {
     if (!navigator.bluetooth) {
       throw new Error("Web Bluetooth not available in this browser (needs Chrome/Edge/Opera, https or localhost)");
     }
-    this.device = await navigator.bluetooth.requestDevice({
-      filters: [{ namePrefix: "JBL BandBox" }, { services: [SERVICE_UUID] }],
-      optionalServices: [SERVICE_UUID],
-    });
+    const device = await navigator.bluetooth.requestDevice(
+      showAll
+        ? { acceptAllDevices: true, optionalServices: [SERVICE_UUID] }
+        : {
+            filters: [{ namePrefix: "JBL BandBox" }, { services: [SERVICE_UUID] }],
+            optionalServices: [SERVICE_UUID],
+          }
+    );
+    await this._connectToDevice(device);
+  }
+
+  // Scans with navigator.bluetooth.requestLEScan(), an experimental API
+  // (enable chrome://flags/#enable-experimental-web-platform-features,
+  // restart Chrome) that reports each advertisement's RSSI directly to the
+  // page -- unlike requestDevice()'s blind native chooser. onUpdate is
+  // called repeatedly with the candidate list sorted strongest-first, so
+  // power-cycling the Solo and watching which entry jumps to the top (near
+  // -40..-60 dBm when close) identifies it even among many neighbors'
+  // devices. Returns a stop() function; call it to end the scan.
+  scanByRssi(onUpdate) {
+    if (!navigator.bluetooth || !navigator.bluetooth.requestLEScan) {
+      throw new Error(
+        "requestLEScan not supported -- enable chrome://flags/#enable-experimental-web-platform-features and restart Chrome"
+      );
+    }
+    const seen = new Map(); // device.id -> {device, rssi, name}
+    const emit = () => {
+      const list = Array.from(seen.values()).sort((a, b) => b.rssi - a.rssi);
+      onUpdate(list);
+    };
+    const onAdvertisement = (event) => {
+      seen.set(event.device.id, { device: event.device, rssi: event.rssi, name: event.device.name || null });
+      emit();
+    };
+    navigator.bluetooth.addEventListener("advertisementreceived", onAdvertisement);
+
+    let scan = null;
+    const scanning = navigator.bluetooth
+      .requestLEScan({ acceptAllAdvertisements: true, keepRepeatedDevices: true })
+      .then((s) => {
+        scan = s;
+      });
+
+    return async () => {
+      await scanning;
+      if (scan) scan.stop();
+      navigator.bluetooth.removeEventListener("advertisementreceived", onAdvertisement);
+    };
+  }
+
+  // Connects to a BluetoothDevice obtained from scanByRssi()'s candidate list.
+  async connectScanned(device) {
+    await this._connectToDevice(device);
+  }
+
+  async _connectToDevice(device) {
+    this.device = device;
     this.onLog(`picked device: ${this.device.name || "(unnamed)"}`);
     this.device.addEventListener("gattserverdisconnected", () => this.onLog("disconnected"));
 
@@ -276,8 +337,13 @@ class BandBoxBLE {
     notifyChar.addEventListener("characteristicvaluechanged", (ev) => {
       const decoded = decodeFrame(ev.target.value);
       this.onLog(`<- notify: ${JSON.stringify(decoded)}`);
-      const waiter = this.pending.shift();
-      if (waiter) waiter.resolve(decoded);
+      if (this.pending.length === 0) return; // unsolicited push (e.g. looper position ticks)
+      const waiter = this.pending[0];
+      const matches = !waiter.expectedFeatureHex ||
+        (decoded.features || []).some((f) => f.id === waiter.expectedFeatureHex);
+      if (!matches) return; // not the reply we're waiting for; keep waiting
+      this.pending.shift();
+      waiter.resolve(decoded);
     });
 
     this.onLog("connected, notifications enabled");
@@ -293,12 +359,25 @@ class BandBoxBLE {
     }
   }
 
-  /** Send a frame and resolve with the next notification (the device
-   * answers one request at a time in every capture seen so far). */
-  async request(frame, timeoutMs = 4000) {
+  /** Send a frame and resolve with the next notification that carries
+   * expectedFeatureHex (e.g. "0x3442"), ignoring any unsolicited
+   * notifications in between -- the looper pushes unprompted position/state
+   * ticks (~1/s while active) that would otherwise be mistaken for the
+   * reply to an unrelated request. Pass no expectedFeatureHex to accept
+   * the very next notification regardless of content (legacy behavior). */
+  async request(frame, expectedFeatureHex, timeoutMs = 4000) {
     const promise = new Promise((resolve, reject) => {
-      this.pending.push({ resolve, reject });
-      setTimeout(() => reject(new Error("timed out waiting for a response")), timeoutMs);
+      const waiter = {
+        resolve: (v) => { clearTimeout(timer); resolve(v); },
+        reject,
+        expectedFeatureHex,
+      };
+      const timer = setTimeout(() => {
+        const idx = this.pending.indexOf(waiter);
+        if (idx !== -1) this.pending.splice(idx, 1);
+        reject(new Error("timed out waiting for a response"));
+      }, timeoutMs);
+      this.pending.push(waiter);
     });
     await this._send(frame);
     return promise;
@@ -314,45 +393,68 @@ class BandBoxBLE {
     return this.writeFeature(0x3442, [channel & 0xff, presetId & 0xff]);
   }
 
+  // 0x3140 is both the looper transport write and the GET for
+  // looper_recording_state (0=stop/empty, 1-3=recording, 4=undo, 5=discard,
+  // 6=cancel -- see onboard_controls.py's LOOPER_RECORDING).
+  async looperRecordingState() {
+    const resp = await this.request(buildGetFrame(0x3140), "0x3140");
+    const feature = (resp.features || []).find(f => f.id === "0x3140");
+    if (!feature) throw new Error("no looper_recording_state in response");
+    return hexToBytes(feature.valueHex)[0];
+  }
+
   async looper(action) {
     const cmd = LOOPER_COMMANDS[action];
     if (!cmd) throw new Error(`unknown looper action: ${action}`);
     const [featureId, value] = cmd;
+    if (action === "start") {
+      // "start" only begins a fresh recording when the device is actually
+      // settled back to recording_state=0 -- sent too soon after delete/stop
+      // (still mid-transition), the device reads it as an overdub instead
+      // and nothing visibly happens. Poll briefly for the confirmed-empty
+      // state first, mirroring the guard looper_controls.py applies on the
+      // officially exposed path, instead of racing a bare write.
+      const deadline = Date.now() + 2000;
+      while (Date.now() < deadline) {
+        if ((await this.looperRecordingState()) === 0) break;
+        await new Promise((r) => setTimeout(r, 150));
+      }
+    }
     return this.writeFeature(featureId, value);
   }
 
   // ---- reads (not yet exercised on hardware) ----
 
   async getInventory() {
-    const resp = await this.request(buildGetFrame(0x3440));
+    const resp = await this.request(buildGetFrame(0x3440), "0x3440");
     const feature = (resp.features || []).find(f => f.id === "0x3440");
     if (!feature) throw new Error("no 0x3440 feature in response");
     return parseInventory(hexToBytes(feature.valueHex));
   }
 
   async getSelection(channel) {
-    const resp = await this.request(buildFrame(0x3441, [channel]));
+    const resp = await this.request(buildFrame(0x3441, [channel]), "0x3442");
     const feature = (resp.features || []).find(f => f.id === "0x3442");
     if (!feature) throw new Error("no 0x3442 feature in response");
     return parseSelection(hexToBytes(feature.valueHex));
   }
 
   async getPresetDetail(presetId) {
-    const resp = await this.request(buildFrame(0x3443, [presetId]));
+    const resp = await this.request(buildFrame(0x3443, [presetId]), "0x3444");
     const feature = (resp.features || []).find(f => f.id === "0x3444");
     if (!feature) throw new Error("no 0x3444 feature in response");
     return parsePresetInfo(hexToBytes(feature.valueHex));
   }
 
   async getChannelInput(channel) {
-    const resp = await this.request(buildFrame(0x3400, [channel]));
+    const resp = await this.request(buildFrame(0x3400, [channel]), "0x3401");
     const feature = (resp.features || []).find(f => f.id === "0x3401");
     if (!feature) throw new Error("no 0x3401 feature in response");
     return parseChannelInput(hexToBytes(feature.valueHex));
   }
 
   async getVolume(channel, inputType) {
-    const resp = await this.request(buildFrame(0x3405, [channel, inputType]));
+    const resp = await this.request(buildFrame(0x3405, [channel, inputType]), "0x3406");
     const feature = (resp.features || []).find(f => f.id === "0x3406");
     if (!feature) throw new Error("no 0x3406 feature in response");
     return parseVolume(hexToBytes(feature.valueHex));
@@ -409,7 +511,7 @@ class BandBoxBLE {
 
   async presetOperation(action, channel, sourceId, name, genre) {
     const value = buildOperationValue(action, channel, sourceId, name, genre);
-    const resp = await this.request(buildFrame(PRESET_OPERATION_FEATURE, value));
+    const resp = await this.request(buildFrame(PRESET_OPERATION_FEATURE, value), "0x3446");
     const feature = (resp.features || []).find(f => f.id === "0x3446");
     if (!feature) throw new Error("no 0x3446 feature in response");
     return parseOperationFields(hexToBytes(feature.valueHex));

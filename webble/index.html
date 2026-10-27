@@ -31,8 +31,23 @@ https (not opened as a local file://).</p>
 
 <div class="row">
   <button id="connectBtn">Connect to BandBox</button>
+  <button id="connectAllBtn">Connect (show all nearby devices)</button>
   <span id="status">disconnected</span>
 </div>
+<p class="warn">If the Solo doesn't show up under "Connect to BandBox" (it can advertise
+with no name), use "Connect (show all nearby devices)" and pick it by elimination —
+e.g. "Unknown or unnamed device".</p>
+
+<div class="row">
+  <button id="scanBtn">Scan by signal strength (experimental)</button>
+  <button id="scanStopBtn" disabled>Stop scan</button>
+</div>
+<p class="warn">Experimental Chrome-only API (requestLEScan). In practice it has never
+worked reliably on desktop Chrome (Windows/macOS/Linux) regardless of flags -- it mostly
+only works on ChromeOS and Android. If it errors out here, that's not something the
+chrome://flags/#enable-experimental-web-platform-features flag fixes; use "Connect (show
+all nearby devices)" above instead and pick the Solo by elimination.</p>
+<div id="scanList"></div>
 
 <div class="row">
   <label>Amp: <select id="ampModel">
@@ -135,6 +150,59 @@ document.getElementById("connectBtn").addEventListener("click", async () => {
   } catch (e) {
     log(`connect failed: ${e.message || e}`);
   }
+});
+
+document.getElementById("connectAllBtn").addEventListener("click", async () => {
+  try {
+    await amp.connect(true);
+    setConnected(true);
+  } catch (e) {
+    log(`connect failed: ${e.message || e}`);
+  }
+});
+
+let stopScan = null;
+const scanListEl = document.getElementById("scanList");
+const scanBtn = document.getElementById("scanBtn");
+const scanStopBtn = document.getElementById("scanStopBtn");
+
+function renderScanList(candidates) {
+  scanListEl.innerHTML = "";
+  for (const c of candidates) {
+    const row = document.createElement("div");
+    row.className = "row";
+    const btn = document.createElement("button");
+    btn.textContent = `${c.rssi} dBm — ${c.name || "(unnamed)"} — ${c.device.id.slice(0, 8)}`;
+    btn.addEventListener("click", async () => {
+      if (stopScan) { await stopScan(); stopScan = null; }
+      scanBtn.disabled = false;
+      scanStopBtn.disabled = true;
+      try {
+        await amp.connectScanned(c.device);
+        setConnected(true);
+      } catch (e) {
+        log(`connect failed: ${e.message || e}`);
+      }
+    });
+    row.appendChild(btn);
+    scanListEl.appendChild(row);
+  }
+}
+
+scanBtn.addEventListener("click", () => {
+  try {
+    stopScan = amp.scanByRssi(renderScanList);
+    scanBtn.disabled = true;
+    scanStopBtn.disabled = false;
+  } catch (e) {
+    log(`scan failed: ${e.message || e}`);
+  }
+});
+
+scanStopBtn.addEventListener("click", async () => {
+  if (stopScan) { await stopScan(); stopScan = null; }
+  scanBtn.disabled = false;
+  scanStopBtn.disabled = true;
 });
 
 EffectCatalog.load().then(c => { catalog = c; log("effect catalog loaded"); })

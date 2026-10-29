@@ -111,6 +111,33 @@ all nearby devices)" above instead and pick the Solo by elimination.</p>
   <button id="setChannelBtn" disabled>Set</button>
 </div>
 
+<h2>Tuner <span class="unverified">(not yet verified on hardware; see docs/protocol.md's "Tuner session")</span></h2>
+<p>Enabling the tuner alone does nothing -- claiming the tuner page first is required. The amp mutes while the tuner page is open.</p>
+<div class="row">
+  <label>Instrument: <select id="tunerInstrument" disabled>
+    <option value="guitar_3_plus_3">Guitar (3+3)</option>
+    <option value="guitar_6_in_line">Guitar (6-in-line)</option>
+    <option value="bass_4_string">Bass (4-string)</option>
+    <option value="ukulele">Ukulele</option>
+  </select></label>
+  <label>String: <select id="tunerMode" disabled>
+    <option value="auto">Auto</option>
+    <option value="string_1">1 (high E)</option><option value="string_2">2</option>
+    <option value="string_3">3</option><option value="string_4">4</option>
+    <option value="string_5">5</option><option value="string_6">6 (low)</option>
+  </select></label>
+</div>
+<div class="row">
+  <label>Tuning: <select id="tunerTuning" disabled></select></label>
+  <label>Reference: <input id="tunerReference" type="number" min="420" max="460" step="0.1" value="440" style="width:70px" disabled> Hz</label>
+</div>
+<div class="row">
+  <button id="tunerReadBtn" disabled>Read current settings</button>
+  <button id="tunerStartBtn" disabled>Start tuner</button>
+  <button id="tunerStopBtn" disabled>Stop tuner</button>
+</div>
+<div class="row" id="tunerReadout" style="font-family: ui-monospace, monospace; font-size: 14px;">—</div>
+
 <h2>Log</h2>
 <div id="log"></div>
 
@@ -139,8 +166,11 @@ function setConnected(connected) {
   document.querySelectorAll(
     "#presetButtons button, [data-looper], #readPresetBtn, #readMasterBtn, #setMasterBtn, " +
     "#masterSlider, #channelPicker, #readChannelBtn, #setChannelBtn, #channelSlider, " +
-    "#opName, #opGenre, #duplicateBtn, #saveAsBtn, #saveUserBtn, #renameBtn"
+    "#opName, #opGenre, #duplicateBtn, #saveAsBtn, #saveUserBtn, #renameBtn, " +
+    "#tunerInstrument, #tunerMode, #tunerTuning, #tunerReference, #tunerReadBtn"
   ).forEach(b => b.disabled = !connected);
+  stopTunerUI(); // also resets Start/Stop button state on either transition
+  tunerStartBtn.disabled = !connected;
 }
 
 document.getElementById("connectBtn").addEventListener("click", async () => {
@@ -408,6 +438,83 @@ document.getElementById("setChannelBtn").addEventListener("click", async () => {
     const channel = Number(document.getElementById("channelPicker").value);
     await amp.setChannelVolume(channel, channelInput.inputType, Number(channelSlider.value));
   } catch (e) { log(`set channel volume failed: ${e.message || e}`); }
+});
+
+// ---- tuner ----
+
+const tuningSelect = document.getElementById("tunerTuning");
+for (const name of Object.keys(TUNER_TUNINGS)) {
+  const opt = document.createElement("option");
+  opt.value = name;
+  opt.textContent = name.replace(/_/g, " ");
+  tuningSelect.appendChild(opt);
+}
+
+const tunerReadout = document.getElementById("tunerReadout");
+const tunerStartBtn = document.getElementById("tunerStartBtn");
+const tunerStopBtn = document.getElementById("tunerStopBtn");
+let tunerRunning = false;
+
+function setTunerRunning(running) {
+  tunerRunning = running;
+  tunerStartBtn.disabled = running;
+  tunerStopBtn.disabled = !running;
+}
+
+function stopTunerUI() {
+  setTunerRunning(false);
+  amp.onTunerMeasurement = null;
+  tunerReadout.textContent = "—";
+}
+
+function renderTunerMeasurement(m) {
+  const noteNames = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+  let noteLabel = "";
+  if (m.hasSignal && m.frequency > 0) {
+    const midi = Math.round(69 + 12 * Math.log2(m.frequency / 440));
+    noteLabel = `${noteNames[(midi % 12 + 12) % 12]}${Math.floor(midi / 12) - 1} — `;
+  }
+  tunerReadout.textContent = m.hasSignal
+    ? `${noteLabel}${m.frequency.toFixed(1)} Hz, deviation ${m.result.toFixed(1)}`
+    : "no signal";
+}
+
+document.getElementById("tunerReadBtn").addEventListener("click", async () => {
+  try {
+    const settings = await amp.getTunerSettings();
+    document.getElementById("tunerInstrument").value =
+      Object.keys(TUNER_INSTRUMENTS).find(k => TUNER_INSTRUMENTS[k] === settings.instrument) || "guitar_3_plus_3";
+    document.getElementById("tunerMode").value =
+      Object.keys(TUNER_MODES).find(k => TUNER_MODES[k] === settings.mode) || "auto";
+    tuningSelect.value =
+      Object.keys(TUNER_TUNINGS).find(k => TUNER_TUNINGS[k] === settings.tuning) || "standard";
+    document.getElementById("tunerReference").value = settings.referenceHz;
+    log(`tuner settings read: ${JSON.stringify(settings)}`);
+  } catch (e) { log(`tuner settings read failed: ${e.message || e}`); }
+});
+
+document.getElementById("tunerStartBtn").addEventListener("click", async () => {
+  try {
+    amp.onTunerMeasurement = renderTunerMeasurement;
+    await amp.startTuner({
+      instrument: document.getElementById("tunerInstrument").value,
+      mode: document.getElementById("tunerMode").value,
+      tuning: tuningSelect.value,
+      referenceHz: Number(document.getElementById("tunerReference").value),
+    });
+    setTunerRunning(true);
+    tunerReadout.textContent = "listening...";
+  } catch (e) {
+    amp.onTunerMeasurement = null;
+    log(`tuner start failed: ${e.message || e}`);
+  }
+});
+
+document.getElementById("tunerStopBtn").addEventListener("click", async () => {
+  try {
+    await amp.stopTuner();
+  } catch (e) { log(`tuner stop failed: ${e.message || e}`); }
+  stopTunerUI();
 });
 </script>
 </body>

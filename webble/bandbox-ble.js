@@ -46,6 +46,36 @@ const EFFECT_FEATURE = 0x3445;
 const EFFECT_CHANGE = { model: null /* = current model's model_change_code */, bypass: 1, parameter: 4 };
 const BYPASS_ENCODING = { active: 0, bypassed: 1, omitted: 255 };
 
+// Tuner (features 0x3100-0x3107/0x3804), ported from onboard_controls.py and
+// docs/protocol.md's "Tuner session" -- found by examining JBL One 2.1.16
+// and tested on a Trio via an independent BLE bridge, not yet exercised by
+// this project's own Swift/Python code or on real hardware from this repo.
+// Simply writing tuner_enabled does nothing; the app first claims the tuner
+// page (0x3804), reads the current instrument/mode/tuning/reference, then
+// enables the tuner and streams 0x3106 measurement notifications.
+const TUNER_PAGE = 1; // page_in_use's page id for "tuner" (see onboard_controls.py's PAGES)
+const PAGE_STATES = { not_in_use: 0, device_in_use: 1, app_in_use: 2 };
+const TUNER_MODES = { auto: 0, string_1: 1, string_2: 2, string_3: 3, string_4: 4, string_5: 5, string_6: 6 };
+const TUNER_INSTRUMENTS = { guitar_3_plus_3: 0, guitar_6_in_line: 1, bass_4_string: 2, ukulele: 3 };
+const TUNER_TUNINGS = {
+  standard: 0, drop_d: 1, full_step_down: 2, half_step_up: 3,
+  open_c: 4, open_d: 5, open_e: 6, open_f: 7, open_g: 8,
+  open_a: 9, drop_c_sharp: 10, drop_c_sharp_alt_1: 11,
+  drop_c: 13, drop_b: 14, drop_a: 15, dadgad: 16,
+  half_step_down: 17, bass_standard: 18, bass_drop_d: 19,
+  bass_drop_c: 20, bass_bead: 32, bass_full_step_down: 33,
+  bass_half_step_down: 34, ukulele_standard: 25, ukulele_low_g: 26,
+  ukulele_traditional: 35, ukulele_english: 36, ukulele_canadian: 28,
+  ukulele_baritone: 37, ukulele_slide: 38, ukulele_slack_key: 39,
+};
+
+// Heartbeat: while the tuner page is claimed, the amp periodically notifies
+// feature 0x0002 (empty value); the app answers each one with this fixed
+// command=4 frame carrying feature 0x0002 and no value, or the amp leaves
+// the tuner page by itself after a few seconds. Per docs/protocol.md, this
+// echo was implemented but NOT confirmed on real hardware -- best effort.
+const HEARTBEAT_ECHO_FRAME = new Uint8Array([0x00, 0xdd, 0x04, 0x00, 0x01, 0x00, 0x04, 0x00, 0x02, 0x00, 0x00, 0x00]);
+
 // Preset operations (feature 0x3446), ported from preset_controls.py's
 // _operation(): duplicate/save_as create a new preset (device assigns the
 // ID), rename/save_user_preset mutate the existing one in place.
@@ -187,6 +217,22 @@ function parseVolume(bytes) {
   return { channel: bytes[0], inputType: bytes[1], volume: bytes[2] };
 }
 
+// 0x3106 unsolicited tuner measurement: f32 frequency (Hz) | u8 string mode |
+// f32 result (amp's own -150..150 deviation scale, unit not independently
+// verified) | u8 has_signal. Mirrors onboard_controls.py's decode_response.
+function parseTunerMeasurement(bytes) {
+  return {
+    frequency: readFloat32LE(bytes, 0),
+    mode: bytes[4],
+    result: readFloat32LE(bytes, 5),
+    hasSignal: bytes[9] !== 0,
+  };
+}
+
+function parsePageInUse(bytes) {
+  return { page: bytes[0], state: bytes[1] };
+}
+
 function encodePresetName(name) {
   const bytes = new TextEncoder().encode(name);
   if (bytes.length > 255) throw new Error("preset name exceeds the one-byte UTF-8 length field");
@@ -250,6 +296,7 @@ class BandBoxBLE {
     this.device = null;
     this.writeChar = null;
     this.pending = []; // FIFO of {resolve, reject} for in-flight request()s
+    this.onTunerMeasurement = null; // set by caller: (measurement) => {...}
   }
 
   get deviceName() {
@@ -337,6 +384,16 @@ class BandBoxBLE {
     notifyChar.addEventListener("characteristicvaluechanged", (ev) => {
       const decoded = decodeFrame(ev.target.value);
       this.onLog(`<- notify: ${JSON.stringify(decoded)}`);
+      // Streamed tuner measurements and the tuner-page heartbeat are always
+      // unsolicited pushes (like looper position ticks), never a reply to a
+      // pending request() -- handle them regardless of the pending queue.
+      for (const feature of decoded.features || []) {
+        if (feature.id === "0x3106" && this.onTunerMeasurement) {
+          this.onTunerMeasurement(parseTunerMeasurement(hexToBytes(feature.valueHex)));
+        } else if (feature.id === "0x0002") {
+          this._echoHeartbeat();
+        }
+      }
       if (this.pending.length === 0) return; // unsolicited push (e.g. looper position ticks)
       const waiter = this.pending[0];
       const matches = !waiter.expectedFeatureHex ||
@@ -381,6 +438,14 @@ class BandBoxBLE {
     });
     await this._send(frame);
     return promise;
+  }
+
+  async _echoHeartbeat() {
+    try {
+      await this._send(HEARTBEAT_ECHO_FRAME);
+    } catch (e) {
+      this.onLog(`heartbeat echo failed: ${e.message || e}`);
+    }
   }
 
   async writeFeature(featureId, valueBytes) {
@@ -537,6 +602,113 @@ class BandBoxBLE {
   async renamePreset(channel, presetId, name) {
     if (presetId < 51) throw new Error("only user presets (ID 51+) can be renamed");
     return this.presetOperation("rename", channel, presetId, name, null);
+  }
+
+  // ---- tuner (see docs/protocol.md's "Tuner session"; not yet exercised
+  // by this project's own Swift/Python code, nor on hardware from here) ----
+
+  async _getByte(featureId, expectedHex) {
+    const resp = await this.request(buildGetFrame(featureId), expectedHex);
+    const feature = (resp.features || []).find(f => f.id === expectedHex);
+    if (!feature) throw new Error(`no ${expectedHex} feature in response`);
+    return hexToBytes(feature.valueHex)[0];
+  }
+
+  async getTunerEnabled() {
+    return (await this._getByte(0x3100, "0x3100")) !== 0;
+  }
+
+  async setTunerEnabled(enabled) {
+    return this.writeFeature(0x3100, [enabled ? 1 : 0]);
+  }
+
+  async getTunerMode() {
+    return this._getByte(0x3101, "0x3101");
+  }
+
+  async setTunerMode(mode) {
+    if (!(mode in TUNER_MODES)) throw new Error(`tuner mode must be one of: ${Object.keys(TUNER_MODES)}`);
+    return this.writeFeature(0x3101, [TUNER_MODES[mode]]);
+  }
+
+  async getTunerInstrument() {
+    return this._getByte(0x3102, "0x3102");
+  }
+
+  async setTunerInstrument(instrument) {
+    if (!(instrument in TUNER_INSTRUMENTS)) throw new Error(`tuner instrument must be one of: ${Object.keys(TUNER_INSTRUMENTS)}`);
+    return this.writeFeature(0x3102, [TUNER_INSTRUMENTS[instrument]]);
+  }
+
+  async getTunerTuning() {
+    return this._getByte(0x3104, "0x3104");
+  }
+
+  async setTunerTuning(tuning) {
+    if (!(tuning in TUNER_TUNINGS)) throw new Error(`tuner tuning must be one of: ${Object.keys(TUNER_TUNINGS)}`);
+    return this.writeFeature(0x3104, [TUNER_TUNINGS[tuning]]);
+  }
+
+  async getTunerReferenceHz() {
+    const resp = await this.request(buildGetFrame(0x3103), "0x3103");
+    const feature = (resp.features || []).find(f => f.id === "0x3103");
+    if (!feature) throw new Error("no 0x3103 feature in response");
+    const bytes = hexToBytes(feature.valueHex);
+    return (bytes[0] | (bytes[1] << 8)) / 10;
+  }
+
+  async setTunerReferenceHz(hz) {
+    const raw = Math.round(hz * 10);
+    if (!Number.isFinite(hz) || raw < 4200 || raw > 4600) {
+      throw new Error("tuner reference must be 420.0..460.0 Hz in 0.1 Hz steps");
+    }
+    return this.writeFeature(0x3103, [raw & 0xff, (raw >> 8) & 0xff]);
+  }
+
+  /** Read the current instrument/mode/tuning/reference in one call, as the
+   * app does before enabling the tuner (see docs/protocol.md). */
+  async getTunerSettings() {
+    return {
+      instrument: await this.getTunerInstrument(),
+      mode: await this.getTunerMode(),
+      tuning: await this.getTunerTuning(),
+      referenceHz: await this.getTunerReferenceHz(),
+    };
+  }
+
+  async claimTunerPage() {
+    return this.writeFeature(0x3804, [TUNER_PAGE, PAGE_STATES.app_in_use]);
+  }
+
+  async releaseTunerPage() {
+    return this.writeFeature(0x3804, [TUNER_PAGE, PAGE_STATES.not_in_use]);
+  }
+
+  async getTunerPageInUse() {
+    const resp = await this.request(buildFrame(0x3803, [TUNER_PAGE]), "0x3804");
+    const feature = (resp.features || []).find(f => f.id === "0x3804");
+    if (!feature) throw new Error("no 0x3804 feature in response");
+    return parsePageInUse(hexToBytes(feature.valueHex));
+  }
+
+  /** Claim the tuner page and enable the tuner. Measurements then stream as
+   * 0x3106 notifications to onTunerMeasurement -- set that before calling.
+   * Settings default to whatever the amp already has (pass to override). */
+  async startTuner({ instrument, mode, tuning, referenceHz } = {}) {
+    await this.claimTunerPage();
+    if (instrument != null) await this.setTunerInstrument(instrument);
+    if (mode != null) await this.setTunerMode(mode);
+    if (tuning != null) await this.setTunerTuning(tuning);
+    if (referenceHz != null) await this.setTunerReferenceHz(referenceHz);
+    await this.setTunerEnabled(true);
+  }
+
+  /** Disable the tuner and release the page. Per docs/protocol.md, skipping
+   * this (or an unanswered heartbeat) makes the amp leave the page itself
+   * after a few seconds anyway, but this is the clean, documented way. */
+  async stopTuner() {
+    await this.setTunerEnabled(false);
+    await this.releaseTunerPage();
   }
 
   // ---- mixer writes ----

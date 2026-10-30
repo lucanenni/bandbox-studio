@@ -545,8 +545,11 @@ class BandBoxBLE {
   /** Start live-tracking the looper's state machine. onUpdate is called with
    * partial state ({recordingState, playbackState, length, position, layers})
    * -- merge it into whatever you already have, don't replace. recordingState
-   * is NOT pushed spontaneously (re/PROTOCOL.md), so it's polled; everything
-   * else arrives as push notifications once this does an initial read. */
+   * is NOT pushed spontaneously (re/PROTOCOL.md), so it's polled every tick.
+   * playbackState IS pushed on an app-initiated play/pause write, but NOT
+   * confirmed for the amp's own implicit stop-then-autoplay transition --
+   * so it's polled every tick too, rather than trusting push alone to catch
+   * that case. length/position arrive as push notifications once primed. */
   startLooperMonitor(onUpdate, intervalMs = 300) {
     this.onLooperUpdate = onUpdate;
     this._looperMonitorActive = true;
@@ -566,7 +569,9 @@ class BandBoxBLE {
         if (!this._looperMonitorActive) break;
         try {
           const recordingState = await this.looperRecordingState();
-          if (this.onLooperUpdate) this.onLooperUpdate({ recordingState });
+          if (!this._looperMonitorActive) break;
+          const playbackState = await this.getLooperPlaybackState();
+          if (this.onLooperUpdate) this.onLooperUpdate({ recordingState, playbackState });
         } catch (e) {
           this.onLog(`looper poll failed: ${e.message || e}`);
         }

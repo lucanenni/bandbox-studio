@@ -29,6 +29,14 @@ const NOTIFY_CHAR_UUID = "65786365-6c70-6f69-6e74-2e636f6d0001";
 
 const LOOPER_ID = 0x3140; // record transport: start/stop/undo/delete
 const LOOPER_PLAYBACK_ID = 0x3145; // play/pause
+// Read-only looper telemetry (see ../re/PROTOCOL.md's "Looper state machine
+// (read side)"): length/position share a unit that is NOT milliseconds;
+// 0x3140/0x3145 above double as GETs for recording/playback state.
+const LOOPER_LENGTH_ID = 0x3143;
+const LOOPER_POSITION_ID = 0x3146;
+const LOOPER_LAYERS_ID = 0x3148;
+const LOOPER_BARS_ID = 0x3147;
+const LOOPER_DURATION_ID = 0x314a; // u32; meaning unverified (always read 1333 in testing)
 
 // One-byte enum values (see ControlRequest.swift's switch on `feature`).
 const LOOPER_COMMANDS = {
@@ -297,6 +305,8 @@ class BandBoxBLE {
     this.writeChar = null;
     this.pending = []; // FIFO of {resolve, reject} for in-flight request()s
     this.onTunerMeasurement = null; // set by caller: (measurement) => {...}
+    this.onLooperUpdate = null; // set by startLooperMonitor(): (partialState) => {...}
+    this._looperMonitorActive = false;
   }
 
   get deviceName() {
@@ -373,7 +383,10 @@ class BandBoxBLE {
   async _connectToDevice(device) {
     this.device = device;
     this.onLog(`picked device: ${this.device.name || "(unnamed)"}`);
-    this.device.addEventListener("gattserverdisconnected", () => this.onLog("disconnected"));
+    this.device.addEventListener("gattserverdisconnected", () => {
+      this.stopLooperMonitor();
+      this.onLog("disconnected");
+    });
 
     const server = await this.device.gatt.connect();
     const service = await server.getPrimaryService(SERVICE_UUID);
@@ -392,6 +405,17 @@ class BandBoxBLE {
           this.onTunerMeasurement(parseTunerMeasurement(hexToBytes(feature.valueHex)));
         } else if (feature.id === "0x0002") {
           this._echoHeartbeat();
+        } else if (feature.id === "0x3143" && this.onLooperUpdate) {
+          // Pushed spontaneously while recording/playing (re/PROTOCOL.md).
+          const b = hexToBytes(feature.valueHex);
+          this.onLooperUpdate({ length: b[0] | (b[1] << 8) });
+        } else if (feature.id === "0x3146" && this.onLooperUpdate) {
+          // Pushed spontaneously, including a reliable `0` at every loop wrap.
+          const b = hexToBytes(feature.valueHex);
+          this.onLooperUpdate({ position: b[0] | (b[1] << 8) });
+        } else if (feature.id === "0x3145" && this.onLooperUpdate) {
+          // Play/pause echo back as an unsolicited c3 on top of their c2 ack.
+          this.onLooperUpdate({ playbackState: hexToBytes(feature.valueHex)[0] });
         }
       }
       if (this.pending.length === 0) return; // unsolicited push (e.g. looper position ticks)
@@ -486,6 +510,73 @@ class BandBoxBLE {
       }
     }
     return this.writeFeature(featureId, value);
+  }
+
+  // 0x3145 is both the playback transport write and the GET for
+  // looper_playback_state (0=stop, 1=play, 2=pause, 3=resume).
+  async getLooperPlaybackState() {
+    return this._getByte(LOOPER_PLAYBACK_ID, "0x3145");
+  }
+
+  async getLooperLength() {
+    return this._getU16(LOOPER_LENGTH_ID, "0x3143");
+  }
+
+  async getLooperPosition() {
+    return this._getU16(LOOPER_POSITION_ID, "0x3146");
+  }
+
+  async getLooperLayers() {
+    return this._getByte(LOOPER_LAYERS_ID, "0x3148");
+  }
+
+  async getLooperBars() {
+    return this._getByte(LOOPER_BARS_ID, "0x3147");
+  }
+
+  async getLooperDuration() {
+    const resp = await this.request(buildGetFrame(LOOPER_DURATION_ID), "0x314A");
+    const feature = (resp.features || []).find(f => f.id === "0x314A");
+    if (!feature) throw new Error("no 0x314A feature in response");
+    const b = hexToBytes(feature.valueHex);
+    return (b[0] | (b[1] << 8) | (b[2] << 16) | (b[3] << 24)) >>> 0;
+  }
+
+  /** Start live-tracking the looper's state machine. onUpdate is called with
+   * partial state ({recordingState, playbackState, length, position, layers})
+   * -- merge it into whatever you already have, don't replace. recordingState
+   * is NOT pushed spontaneously (re/PROTOCOL.md), so it's polled; everything
+   * else arrives as push notifications once this does an initial read. */
+  startLooperMonitor(onUpdate, intervalMs = 300) {
+    this.onLooperUpdate = onUpdate;
+    this._looperMonitorActive = true;
+    (async () => {
+      try {
+        const recordingState = await this.looperRecordingState();
+        const playbackState = await this.getLooperPlaybackState();
+        const length = await this.getLooperLength();
+        const position = await this.getLooperPosition();
+        const layers = await this.getLooperLayers();
+        if (this.onLooperUpdate) this.onLooperUpdate({ recordingState, playbackState, length, position, layers });
+      } catch (e) {
+        this.onLog(`looper initial read failed: ${e.message || e}`);
+      }
+      while (this._looperMonitorActive) {
+        await new Promise((r) => setTimeout(r, intervalMs));
+        if (!this._looperMonitorActive) break;
+        try {
+          const recordingState = await this.looperRecordingState();
+          if (this.onLooperUpdate) this.onLooperUpdate({ recordingState });
+        } catch (e) {
+          this.onLog(`looper poll failed: ${e.message || e}`);
+        }
+      }
+    })();
+  }
+
+  stopLooperMonitor() {
+    this._looperMonitorActive = false;
+    this.onLooperUpdate = null;
   }
 
   // ---- reads (not yet exercised on hardware) ----
@@ -612,6 +703,14 @@ class BandBoxBLE {
     const feature = (resp.features || []).find(f => f.id === expectedHex);
     if (!feature) throw new Error(`no ${expectedHex} feature in response`);
     return hexToBytes(feature.valueHex)[0];
+  }
+
+  async _getU16(featureId, expectedHex) {
+    const resp = await this.request(buildGetFrame(featureId), expectedHex);
+    const feature = (resp.features || []).find(f => f.id === expectedHex);
+    if (!feature) throw new Error(`no ${expectedHex} feature in response`);
+    const b = hexToBytes(feature.valueHex);
+    return b[0] | (b[1] << 8);
   }
 
   async getTunerEnabled() {

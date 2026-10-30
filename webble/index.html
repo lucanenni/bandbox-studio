@@ -34,6 +34,19 @@
     transform: translateX(-50%); transition: left 0.08s linear; }
   .tuner-meter-needle.in-tune { background: #3c3; box-shadow: 0 0 6px #3c3; }
   .tuner-meter-labels { display: flex; justify-content: space-between; width: 100%; font-size: 11px; color: #777; }
+  .looper-status { display: flex; flex-direction: column; gap: 0.5rem; padding: 1rem;
+                    background: #181818; border-radius: 8px; max-width: 460px; }
+  .looper-node rect { fill: #262626; stroke: #444; stroke-width: 1.5; }
+  .looper-node text { fill: #aaa; font: 12px ui-monospace, monospace; text-anchor: middle; dominant-baseline: middle; }
+  .looper-node.active rect { fill: #243; stroke: #3c3; stroke-width: 2.5; }
+  .looper-node.active text { fill: #afa; font-weight: 700; }
+  .looper-edge { stroke: #555; stroke-width: 1.5; fill: none; marker-end: url(#looperArrow); }
+  .looper-edge.undo { stroke: #a60; stroke-dasharray: 4 3; }
+  .looper-edge-label { fill: #888; font: 10px ui-monospace, monospace; text-anchor: middle; }
+  .looper-meta { display: flex; justify-content: space-between; font-size: 12px; color: #999;
+                 font-family: ui-monospace, monospace; }
+  .looper-progress-track { width: 100%; height: 10px; border-radius: 5px; background: #2a2a2a; overflow: hidden; }
+  .looper-progress-fill { height: 100%; width: 0%; background: #3c3; transition: width 0.15s linear; }
 </style>
 </head>
 <body>
@@ -81,6 +94,47 @@ all nearby devices)" above instead and pick the Solo by elimination.</p>
   <button data-looper="delete">Delete/clear</button>
   <button data-looper="play">Play/resume</button>
   <button data-looper="pause">Pause</button>
+</div>
+<div class="looper-status">
+  <svg viewBox="0 0 460 200" width="100%" style="max-width:460px">
+    <defs>
+      <marker id="looperArrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="#555"></path>
+      </marker>
+    </defs>
+    <path class="looper-edge" d="M115,100 L160,100"></path>
+    <text class="looper-edge-label" x="137" y="90">start</text>
+    <path class="looper-edge" d="M265,90 L325,45"></path>
+    <text class="looper-edge-label" x="300" y="60">stop</text>
+    <path class="looper-edge" d="M365,65 L365,135"></path>
+    <text class="looper-edge-label" x="345" y="100">pause</text>
+    <path class="looper-edge" d="M395,135 L395,65"></path>
+    <text class="looper-edge-label" x="420" y="100">play</text>
+    <path class="looper-edge undo" d="M215,125 C215,180 65,180 65,125"></path>
+    <text class="looper-edge-label" x="140" y="196">undo / delete</text>
+
+    <g class="looper-node" id="looperNode_empty">
+      <rect x="15" y="75" width="100" height="50" rx="6"></rect>
+      <text x="65" y="100">Empty</text>
+    </g>
+    <g class="looper-node" id="looperNode_recording">
+      <rect x="165" y="75" width="100" height="50" rx="6"></rect>
+      <text x="215" y="100">Recording</text>
+    </g>
+    <g class="looper-node" id="looperNode_playing">
+      <rect x="330" y="15" width="110" height="50" rx="6"></rect>
+      <text x="385" y="40">Playing</text>
+    </g>
+    <g class="looper-node" id="looperNode_paused">
+      <rect x="330" y="135" width="110" height="50" rx="6"></rect>
+      <text x="385" y="160">Paused</text>
+    </g>
+  </svg>
+  <div class="looper-meta">
+    <span id="looperLayers">&nbsp;</span>
+    <span id="looperRaw">&nbsp;</span>
+  </div>
+  <div class="looper-progress-track"><div class="looper-progress-fill" id="looperProgressFill"></div></div>
 </div>
 
 <h2>Effects <span class="unverified">(not yet verified on hardware)</span></h2>
@@ -193,6 +247,17 @@ function setConnected(connected) {
   ).forEach(b => b.disabled = !connected);
   stopTunerUI(); // also resets Start/Stop button state on either transition
   tunerStartBtn.disabled = !connected;
+
+  looperState = {};
+  renderLooperState(looperState);
+  if (connected) {
+    amp.startLooperMonitor((partial) => {
+      Object.assign(looperState, partial);
+      renderLooperState(looperState);
+    });
+  } else {
+    amp.stopLooperMonitor();
+  }
 }
 
 document.getElementById("connectBtn").addEventListener("click", async () => {
@@ -276,6 +341,41 @@ for (let i = 1; i <= 27; i++) {
 document.querySelectorAll("[data-looper]").forEach(b => {
   b.addEventListener("click", () => amp.looper(b.dataset.looper).catch(e => log(`looper failed: ${e.message || e}`)));
 });
+
+// ---- looper state machine display ----
+
+let looperState = {};
+const LOOPER_RECORDING_LABELS = ["empty", "rec L1", "rec L2", "rec L3", "undo", "discard", "cancel"];
+const LOOPER_PLAYBACK_LABELS = ["stop", "play", "pause", "resume"];
+
+// recordingState 1-3 means "recording" regardless of layer; playbackState
+// 1 (play) and 3 (resume) both render as "playing" -- see
+// ../re/PROTOCOL.md's "Looper state machine (read side)".
+function currentLooperNode(state) {
+  if (state.recordingState >= 1 && state.recordingState <= 3) return "recording";
+  if (state.playbackState === 1 || state.playbackState === 3) return "playing";
+  if (state.playbackState === 2) return "paused";
+  return "empty";
+}
+
+function renderLooperState(state) {
+  const node = currentLooperNode(state);
+  for (const id of ["empty", "recording", "playing", "paused"]) {
+    document.getElementById(`looperNode_${id}`).classList.toggle("active", id === node);
+  }
+  document.getElementById("looperLayers").textContent =
+    state.layers != null ? `${state.layers} layer${state.layers === 1 ? "" : "s"}` : " ";
+  document.getElementById("looperRaw").textContent =
+    state.recordingState != null && state.playbackState != null
+      ? `rec=${LOOPER_RECORDING_LABELS[state.recordingState] ?? state.recordingState} play=${LOOPER_PLAYBACK_LABELS[state.playbackState] ?? state.playbackState}`
+      : " ";
+  const fill = document.getElementById("looperProgressFill");
+  fill.style.width = state.length > 0 && state.position != null
+    ? `${Math.max(0, Math.min(100, (state.position / state.length) * 100))}%`
+    : "0%";
+}
+
+renderLooperState(looperState);
 
 // ---- effects ----
 

@@ -20,6 +20,20 @@
   .param-row label { width: 140px; font-size: 12px; }
   .param-row input[type=range] { flex: 1; }
   .param-row output { width: 42px; text-align: right; font-size: 12px; }
+  .tuner-gauge { display: flex; flex-direction: column; align-items: center; gap: 0.3rem;
+                 padding: 1rem; background: #181818; border-radius: 8px; max-width: 360px; }
+  .tuner-note { font-size: 3rem; font-weight: 700; color: #eee; line-height: 1; font-family: ui-monospace, monospace; }
+  .tuner-note.in-tune { color: #3c3; }
+  .tuner-freq { font-size: 0.85rem; color: #999; font-family: ui-monospace, monospace; }
+  .tuner-meter-track { position: relative; width: 100%; height: 28px; border-radius: 4px; overflow: hidden;
+    background: linear-gradient(to right, #822 0%, #a60 18%, #352 42%, #352 58%, #a60 82%, #822 100%); }
+  .tuner-meter-center-tick { position: absolute; left: 50%; top: 0; bottom: 0; width: 2px;
+                              background: rgba(255,255,255,0.5); transform: translateX(-50%); }
+  .tuner-meter-needle { position: absolute; top: -4px; bottom: -4px; width: 3px; left: 50%;
+    background: #fff; border-radius: 2px; box-shadow: 0 0 5px rgba(0,0,0,0.7);
+    transform: translateX(-50%); transition: left 0.08s linear; }
+  .tuner-meter-needle.in-tune { background: #3c3; box-shadow: 0 0 6px #3c3; }
+  .tuner-meter-labels { display: flex; justify-content: space-between; width: 100%; font-size: 11px; color: #777; }
 </style>
 </head>
 <body>
@@ -111,7 +125,7 @@ all nearby devices)" above instead and pick the Solo by elimination.</p>
   <button id="setChannelBtn" disabled>Set</button>
 </div>
 
-<h2>Tuner <span class="unverified">(not yet verified on hardware; see docs/protocol.md's "Tuner session")</span></h2>
+<h2>Tuner</h2>
 <p>Enabling the tuner alone does nothing -- claiming the tuner page first is required. The amp mutes while the tuner page is open.</p>
 <div class="row">
   <label>Instrument: <select id="tunerInstrument" disabled>
@@ -136,7 +150,15 @@ all nearby devices)" above instead and pick the Solo by elimination.</p>
   <button id="tunerStartBtn" disabled>Start tuner</button>
   <button id="tunerStopBtn" disabled>Stop tuner</button>
 </div>
-<div class="row" id="tunerReadout" style="font-family: ui-monospace, monospace; font-size: 14px;">—</div>
+<div class="tuner-gauge">
+  <div class="tuner-note" id="tunerNote">—</div>
+  <div class="tuner-freq" id="tunerFreq">&nbsp;</div>
+  <div class="tuner-meter-track">
+    <div class="tuner-meter-center-tick"></div>
+    <div class="tuner-meter-needle" id="tunerNeedle" style="left:50%"></div>
+  </div>
+  <div class="tuner-meter-labels"><span>flat</span><span>in tune</span><span>sharp</span></div>
+</div>
 
 <h2>Log</h2>
 <div id="log"></div>
@@ -450,10 +472,19 @@ for (const name of Object.keys(TUNER_TUNINGS)) {
   tuningSelect.appendChild(opt);
 }
 
-const tunerReadout = document.getElementById("tunerReadout");
+const tunerNote = document.getElementById("tunerNote");
+const tunerFreq = document.getElementById("tunerFreq");
+const tunerNeedle = document.getElementById("tunerNeedle");
 const tunerStartBtn = document.getElementById("tunerStartBtn");
 const tunerStopBtn = document.getElementById("tunerStopBtn");
 let tunerRunning = false;
+
+// The amp's deviation scale (0x3106's "result" field) is -150..150 with its
+// unit not independently verified (see bandbox-ble.js's parseTunerMeasurement).
+// The needle clamps display to +/-50 of that range so small, musically useful
+// deviations are still visible as motion rather than pinned at the rail.
+const TUNER_METER_RANGE = 50;
+const TUNER_IN_TUNE_THRESHOLD = 3;
 
 function setTunerRunning(running) {
   tunerRunning = running;
@@ -464,19 +495,34 @@ function setTunerRunning(running) {
 function stopTunerUI() {
   setTunerRunning(false);
   amp.onTunerMeasurement = null;
-  tunerReadout.textContent = "—";
+  tunerNote.textContent = "—";
+  tunerNote.classList.remove("in-tune");
+  tunerFreq.innerHTML = "&nbsp;";
+  tunerNeedle.style.left = "50%";
+  tunerNeedle.classList.remove("in-tune");
 }
 
 function renderTunerMeasurement(m) {
   const noteNames = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
-  let noteLabel = "";
-  if (m.hasSignal && m.frequency > 0) {
-    const midi = Math.round(69 + 12 * Math.log2(m.frequency / 440));
-    noteLabel = `${noteNames[(midi % 12 + 12) % 12]}${Math.floor(midi / 12) - 1} — `;
+  if (!m.hasSignal || m.frequency <= 0) {
+    tunerNote.textContent = "—";
+    tunerNote.classList.remove("in-tune");
+    tunerFreq.textContent = "no signal";
+    tunerNeedle.style.left = "50%";
+    tunerNeedle.classList.remove("in-tune");
+    return;
   }
-  tunerReadout.textContent = m.hasSignal
-    ? `${noteLabel}${m.frequency.toFixed(1)} Hz, deviation ${m.result.toFixed(1)}`
-    : "no signal";
+  const midi = Math.round(69 + 12 * Math.log2(m.frequency / 440));
+  const noteLabel = `${noteNames[(midi % 12 + 12) % 12]}${Math.floor(midi / 12) - 1}`;
+  const inTune = Math.abs(m.result) < TUNER_IN_TUNE_THRESHOLD;
+
+  tunerNote.textContent = noteLabel;
+  tunerNote.classList.toggle("in-tune", inTune);
+  tunerFreq.textContent = `${m.frequency.toFixed(1)} Hz · ${m.result.toFixed(1)}`;
+
+  const pct = 50 + 50 * Math.max(-1, Math.min(1, m.result / TUNER_METER_RANGE));
+  tunerNeedle.style.left = `${pct}%`;
+  tunerNeedle.classList.toggle("in-tune", inTune);
 }
 
 document.getElementById("tunerReadBtn").addEventListener("click", async () => {
@@ -503,7 +549,8 @@ document.getElementById("tunerStartBtn").addEventListener("click", async () => {
       referenceHz: Number(document.getElementById("tunerReference").value),
     });
     setTunerRunning(true);
-    tunerReadout.textContent = "listening...";
+    tunerNote.textContent = "…";
+    tunerFreq.textContent = "listening...";
   } catch (e) {
     amp.onTunerMeasurement = null;
     log(`tuner start failed: ${e.message || e}`);

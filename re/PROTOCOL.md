@@ -119,12 +119,12 @@ Reading a feature (`00 DD 01 00 01 00 04 00 <ID_LE:2> 00 00`, or the bridge's
 |---|---|---|
 | `0x3140` | recording state (also the write point) | 0 stopped/empty, 1/2/3 recording first/second/third layer, 4 undo, 5 discard, 6 cancel |
 | `0x3145` | playback | 0 stop, 1 play, 2 pause, 3 resume |
-| `0x3143` | recorded length | u16 LE, ms |
-| `0x3146` | position in the loop | u16 LE, ms |
+| `0x3143` | recorded length | u16 LE, **not ms** (3214 for a ~9.6 s loop, 500 for ~12 s) |
+| `0x3146` | position in the loop | u16 LE, same units as `0x3143`, not time; wraps to 0 each loop |
 | `0x3148` | layer count | u8 (0 = empty) |
 | `0x3141` | signal interval | u16, unit not verified |
 | `0x3147` | bars | u8 (drum/metronome-backed loops) |
-| `0x314A` | estimated duration | u32 ms |
+| `0x314A` | estimated duration | u32; read 1333 across different loops, meaning unknown |
 
 Observed behavior:
 - The state returns by itself: after a rec press with a loop already present
@@ -142,10 +142,11 @@ Observed behavior:
   `0x3142` a loop-position counter; that is not supported by the capture.
 - The Solo reads a rec command sent too soon after stop/clear as an overdub
   (see webble's guard).
-- Position is only an interpolation target: the bridge reads `0x3146` about
-  every 240 ms and extrapolates between reads; whether the value is truly ms
-  of the loop is assumed from the decompiled app, the progress bar's behavior
-  on hardware is the check (pending).
+- Read replies of polled features arrive in bursts (BLE), so timing them is
+  unreliable. The amp pushes a c3 notification `0x3146 = 0` at every loop wrap:
+  the time between two of them is the real loop duration (confirmed on
+  hardware, the bridge's progress bar uses it).
+- `0x3141` and `0x3149` gave no reply on the Solo.
 
 ## Direct validation from a Mac (`../tools/bandbox_ctl.py`)
 

@@ -180,3 +180,4 @@ hardware:
 | looper play/resume | OK — resumes playback |
 | looper delete/clear | OK — clears the loop |
 | looper undo | sent, effect on the amp not confirmed yet |
+| looper state machine (live `recordingState`/`playbackState` read, state-machine UI) | OK (Solo) — tracks Empty/Recording/Playing/Paused live, including the implicit stop-to-autoplay transition |

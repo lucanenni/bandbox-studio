@@ -161,10 +161,14 @@ async def main():
                                          output_key="bandbox_control_looper_start")
                 if start.get("verified"):
                     print(f"recording for {record_seconds}s -- play something now", file=sys.stderr)
-                    await asyncio.sleep(record_seconds)
-                    await live_write(session, output, "bandbox_control_looper",
-                                     {"action": "stop_recording"},
-                                     output_key="bandbox_control_looper_stop")
+                    try:
+                        await asyncio.sleep(record_seconds)
+                    finally:
+                        # Stop even if the delay is interrupted or raises --
+                        # otherwise a failed test can leave the amp recording.
+                        await live_write(session, output, "bandbox_control_looper",
+                                         {"action": "stop_recording"},
+                                         output_key="bandbox_control_looper_stop")
                 else:
                     output.setdefault("failed_tools", []).append("bandbox_control_looper_stop_skipped")
             print(json.dumps(output, indent=2))

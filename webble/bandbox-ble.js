@@ -56,8 +56,9 @@ const BYPASS_ENCODING = { active: 0, bypassed: 1, omitted: 255 };
 
 // Tuner (features 0x3100-0x3107/0x3804), ported from onboard_controls.py and
 // docs/protocol.md's "Tuner session" -- found by examining JBL One 2.1.16
-// and tested on a Trio via an independent BLE bridge, not yet exercised by
-// this project's own Swift/Python code or on real hardware from this repo.
+// and tested on a Trio via an independent BLE bridge; confirmed working from
+// this repo's webble client too (see ../re/PROTOCOL.md's hardware validation
+// table), still not exercised by this project's own Swift/Python code.
 // Simply writing tuner_enabled does nothing; the app first claims the tuner
 // page (0x3804), reads the current instrument/mode/tuning/reference, then
 // enables the tuner and streams 0x3106 measurement notifications.
@@ -704,8 +705,8 @@ class BandBoxBLE {
     return this.presetOperation("rename", channel, presetId, name, null);
   }
 
-  // ---- tuner (see docs/protocol.md's "Tuner session"; not yet exercised
-  // by this project's own Swift/Python code, nor on hardware from here) ----
+  // ---- tuner (see docs/protocol.md's "Tuner session"; confirmed on hardware
+  // from here, still not exercised by this project's own Swift/Python code) ----
 
   async _getByte(featureId, expectedHex) {
     const resp = await this.request(buildGetFrame(featureId), expectedHex);

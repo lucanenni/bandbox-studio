@@ -418,12 +418,16 @@ class BandBoxBLE {
           this.onLooperUpdate({ playbackState: hexToBytes(feature.valueHex)[0] });
         }
       }
-      if (this.pending.length === 0) return; // unsolicited push (e.g. looper position ticks)
-      const waiter = this.pending[0];
-      const matches = !waiter.expectedFeatureHex ||
-        (decoded.features || []).some((f) => f.id === waiter.expectedFeatureHex);
-      if (!matches) return; // not the reply we're waiting for; keep waiting
-      this.pending.shift();
+      // Match against the OLDEST pending waiter whose expectedFeatureHex is
+      // present in this notification, not just pending[0] -- two different
+      // reads can be genuinely concurrent (e.g. the looper monitor's
+      // background poll overlapping a button-triggered read), and matching
+      // only the head would let an unrelated reply permanently block every
+      // other pending waiter behind it.
+      const idx = this.pending.findIndex((w) =>
+        !w.expectedFeatureHex || (decoded.features || []).some((f) => f.id === w.expectedFeatureHex));
+      if (idx === -1) return; // no pending waiter wants this; unsolicited push
+      const [waiter] = this.pending.splice(idx, 1);
       waiter.resolve(decoded);
     });
 
